@@ -7,7 +7,7 @@ import winreg
 from PyQt5 import QtWidgets
 from PyQt5 import QtGui
 import pygame, math
-from PIL import Image
+from PIL import Image, ImageFilter
 import win32gui,win32process,psutil,win32api,win32ui
 from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget
 from PyQt5.QtGui import QPainter, QPen, QBrush, QFont, QPixmap, QIcon, QColor, QLinearGradient, QKeySequence
@@ -3103,15 +3103,30 @@ class LaunchOverlay(QWidget):
             
             # 创建背景图片（变暗放大）- 添加渐变遮罩和模糊效果
             if image_path and os.path.exists(image_path):
-                bg_pixmap = QPixmap(image_path)
-                # 放大到覆盖整个屏幕宽度，稍微放大一点以支持模糊
-                scale_factor = 1.1
-                bg_scaled = bg_pixmap.scaled(
-                    int(parent_width * scale_factor),
-                    int(parent_width * bg_pixmap.height() / bg_pixmap.width() * scale_factor),
-                    Qt.KeepAspectRatioByExpanding,
-                    Qt.SmoothTransformation
-                )
+                # 使用 PIL 进行模糊处理，因为 QGraphicsEffect 在同一个 Widget 上只能有一个，会被后面的淡入效果覆盖
+                try:
+                    pil_img = Image.open(image_path).convert("RGBA")
+                    # 稍微放大一点以支持模糊边缘
+                    scale_factor = 1.1
+                    target_w = int(parent_width * scale_factor)
+                    target_h = int(target_w * pil_img.height / pil_img.width)
+                    pil_img = pil_img.resize((target_w, target_h), Image.LANCZOS)
+                    # 添加高斯模糊
+                    pil_img = pil_img.filter(ImageFilter.GaussianBlur(radius=25))
+                    
+                    # 转换为 QPixmap
+                    data = pil_img.tobytes("raw", "RGBA")
+                    qimg = QtGui.QImage(data, pil_img.width, pil_img.height, QtGui.QImage.Format_RGBA8888)
+                    bg_scaled = QPixmap.fromImage(qimg)
+                except Exception as e:
+                    print(f"PIL Blur error: {e}")
+                    bg_pixmap = QPixmap(image_path)
+                    bg_scaled = bg_pixmap.scaled(
+                        int(parent_width * 1.1),
+                        int(parent_width * bg_pixmap.height() / bg_pixmap.width() * 1.1),
+                        Qt.KeepAspectRatioByExpanding,
+                        Qt.SmoothTransformation
+                    )
                 
                 # 创建渐变遮罩效果（从顶部到底部逐渐变暗）
                 dark_pixmap = QPixmap(bg_scaled.size())
@@ -3134,17 +3149,12 @@ class LaunchOverlay(QWidget):
                 painter.end()
                 
                 self.overlay_bg_image.setPixmap(dark_pixmap)
-                # 居中显示，稍微偏移以创建模糊效果
+                # 居中显示
                 bg_x = int((parent_width - dark_pixmap.width()) / 2)
                 bg_y = int((parent_height - dark_pixmap.height()) / 2)
                 self.overlay_bg_image.setGeometry(bg_x, bg_y, dark_pixmap.width(), dark_pixmap.height())
                 
-                # 添加模糊效果
-                blur_effect = QtWidgets.QGraphicsBlurEffect(self.overlay_bg_image)
-                blur_effect.setBlurRadius(20)
-                self.overlay_bg_image.setGraphicsEffect(blur_effect)
-                
-                # 淡入显示背景
+                # 淡入显示背景 (这里会设置 GraphicsEffect，会覆盖之前的 blur_effect)
                 bg_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_bg_image)
                 self.overlay_bg_image.setGraphicsEffect(bg_opacity)
                 bg_opacity.setOpacity(0.0)
