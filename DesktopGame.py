@@ -2303,8 +2303,10 @@ class ConfirmDialog(QDialog):
         self.overlay = Overlay(self)
         
         self.init_ui()
-        self.current_index = 1  # 当前选中的按钮索引
-        self.buttons = [self.cancel_button, self.confirm_button]  # 按钮列表
+        self.buttons = [self.cancel_button, self.confirm_button]
+        if hasattr(self, 'shutdown_button'):
+            self.buttons.append(self.shutdown_button)
+        self.current_index = 1  # 默认选中第一个（取消）
         self.last_input_time = 0  # 最后一次处理输入的时间
         self.input_delay = 300  # 去抖延迟时间，单位：毫秒
         self.ignore_input_until = 0  # 忽略输入的时间戳
@@ -2333,9 +2335,21 @@ class ConfirmDialog(QDialog):
         self.confirm_button.clicked.connect(self.confirm_action)
         button_layout.addWidget(self.confirm_button)
 
+        # 特殊处理：关机确认时在右侧添加大按钮
+        if self.variable1 == "要进入睡眠吗":
+            self.shutdown_button = QPushButton("立即关机")
+            self.shutdown_button.clicked.connect(self.shutdown_confirm_action)
+            button_layout.addWidget(self.shutdown_button)
+
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
+
+    def shutdown_confirm_action(self):
+        """立即关机的二次确认"""
+        second_confirm = ConfirmDialog("确定立即关机吗？", scale_factor=self.scale_factor)
+        if second_confirm.exec_():
+            self.confirm_action()
 
     def confirm_action(self): 
         print("用户点击了确认按钮")
@@ -2444,10 +2458,10 @@ class ConfirmDialog(QDialog):
         if current_time - self.last_input_time < self.input_delay:
             return
         
-        if event.key() == Qt.Key_Left:
+        if event.key() in (Qt.Key_Left, Qt.Key_Up):
             self.current_index = max(0, self.current_index - 1)
             self.update_highlight()
-        elif event.key() == Qt.Key_Right:
+        elif event.key() in (Qt.Key_Right, Qt.Key_Down):
             self.current_index = min(len(self.buttons) - 1, self.current_index + 1)
             self.update_highlight()
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -2464,10 +2478,10 @@ class ConfirmDialog(QDialog):
         # 如果按键间隔太短，则不处理
         if current_time - self.last_input_time < self.input_delay:
             return
-        if action == 'LEFT':
+        if action in ('LEFT', 'UP'):
             self.current_index = max(0, self.current_index - 1)
             self.update_highlight()
-        elif action == 'RIGHT':
+        elif action in ('RIGHT', 'DOWN'):
             self.current_index = min(len(self.buttons) - 1, self.current_index + 1)
             self.update_highlight()
         elif action == 'A':
@@ -2480,29 +2494,43 @@ class ConfirmDialog(QDialog):
     def update_highlight(self):
         """更新按钮高亮状态"""
         for index, button in enumerate(self.buttons):
+            is_shutdown = hasattr(self, 'shutdown_button') and button == self.shutdown_button
             if index == self.current_index:
-                button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #45a049;
+                if is_shutdown:
+                    bg_color = "#ff5252"  # 亮红色
+                    border = "2px solid #ffffff"
+                else:
+                    bg_color = "#45a049"  # 深绿色
+                    border = "1px solid #93ffff"
+                
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {bg_color};
                         color: white;
-                        border: 1px solid #93ffff;
+                        border: {border};
                         padding: 20px 0;
                         font-size: 32px;
                         margin: 0;
                         width: 100%;
-                    }
+                        font-weight: bold;
+                    }}
                 """)
             else:
-                button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #4CAF50;
+                if is_shutdown:
+                    bg_color = "#f44336"  # 红色
+                else:
+                    bg_color = "#4CAF50"  # 绿色
+                
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {bg_color};
                         color: white;
                         border: none;
                         padding: 20px 0;
                         font-size: 32px;
                         margin: 0;
                         width: 100%;
-                    }
+                    }}
                 """)
 class LoadingDialog(QDialog):
     """通用加载窗口，显示一条提示信息并保持在最上层。"""
