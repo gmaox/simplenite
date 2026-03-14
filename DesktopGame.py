@@ -8,7 +8,7 @@ from PyQt5 import QtWidgets
 from PyQt5 import QtGui
 import pygame, math
 from PIL import Image, ImageFilter
-import win32gui,win32process,psutil,win32api,win32ui
+import win32gui,win32process,psutil,win32api,win32ui,win32security,win32event
 from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget
 from PyQt5.QtGui import QPainter, QPen, QBrush, QFont, QPixmap, QIcon, QColor, QLinearGradient, QKeySequence
 from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, QTimer, QPoint, QProcess, QPropertyAnimation, QRect, QObject, QEasingCurve, QParallelAnimationGroup
@@ -274,6 +274,46 @@ def set_work_area(left, top, right, bottom):
     rect = ctypes.wintypes.RECT(left, top, right, bottom)
     res = ctypes.windll.user32.SystemParametersInfoW(SPI_SETWORKAREA, 0, ctypes.byref(rect), 1)
     return res != 0
+
+def get_explorer_token():
+    for p in psutil.process_iter(['pid','name']):
+        if p.info['name'].lower() == 'explorer.exe':
+            explorer_pid = p.info['pid']
+            break
+
+    hProcess = win32api.OpenProcess(
+        win32con.PROCESS_QUERY_INFORMATION,
+        False,
+        explorer_pid
+    )
+
+    token = win32security.OpenProcessToken(
+        hProcess,
+        win32con.TOKEN_DUPLICATE | win32con.TOKEN_ASSIGN_PRIMARY | win32con.TOKEN_QUERY
+    )
+
+    return win32security.DuplicateTokenEx(
+        token,
+        win32security.SecurityImpersonation,
+        win32con.TOKEN_ALL_ACCESS,
+        win32security.TokenPrimary
+    )
+EXPLORERTOKEN = get_explorer_token()
+def run_as_user(path):
+    cmd = f'cmd.exe /c start "" "{path}"'
+
+    win32process.CreateProcessAsUser(
+        EXPLORERTOKEN,
+        None,
+        cmd,
+        None,
+        None,
+        False,
+        win32con.DETACHED_PROCESS | win32con.CREATE_NEW_PROCESS_GROUP,
+        None,
+        None,
+        win32process.STARTUPINFO()
+    )
 
 class TaskbarWindow(QMainWindow):
     def __init__(self):
@@ -2303,8 +2343,10 @@ class ConfirmDialog(QDialog):
         self.overlay = Overlay(self)
         
         self.init_ui()
-        self.current_index = 1  # 当前选中的按钮索引
-        self.buttons = [self.cancel_button, self.confirm_button]  # 按钮列表
+        self.buttons = [self.cancel_button, self.confirm_button]
+        if hasattr(self, 'shutdown_button'):
+            self.buttons.append(self.shutdown_button)
+        self.current_index = 1  # 默认选中第一个（取消）
         self.last_input_time = 0  # 最后一次处理输入的时间
         self.input_delay = 300  # 去抖延迟时间，单位：毫秒
         self.ignore_input_until = 0  # 忽略输入的时间戳
@@ -2333,9 +2375,21 @@ class ConfirmDialog(QDialog):
         self.confirm_button.clicked.connect(self.confirm_action)
         button_layout.addWidget(self.confirm_button)
 
+        # 特殊处理：关机确认时在右侧添加大按钮
+        if self.variable1 == "要进入睡眠吗":
+            self.shutdown_button = QPushButton("立即关机")
+            self.shutdown_button.clicked.connect(self.shutdown_confirm_action)
+            button_layout.addWidget(self.shutdown_button)
+
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
+
+    def shutdown_confirm_action(self):
+        """立即关机的二次确认"""
+        second_confirm = ConfirmDialog("确定立即关机吗？", scale_factor=self.scale_factor)
+        if second_confirm.exec_():
+            self.confirm_action()
 
     def confirm_action(self): 
         print("用户点击了确认按钮")
@@ -2444,10 +2498,10 @@ class ConfirmDialog(QDialog):
         if current_time - self.last_input_time < self.input_delay:
             return
         
-        if event.key() == Qt.Key_Left:
+        if event.key() in (Qt.Key_Left, Qt.Key_Up):
             self.current_index = max(0, self.current_index - 1)
             self.update_highlight()
-        elif event.key() == Qt.Key_Right:
+        elif event.key() in (Qt.Key_Right, Qt.Key_Down):
             self.current_index = min(len(self.buttons) - 1, self.current_index + 1)
             self.update_highlight()
         elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -2464,10 +2518,10 @@ class ConfirmDialog(QDialog):
         # 如果按键间隔太短，则不处理
         if current_time - self.last_input_time < self.input_delay:
             return
-        if action == 'LEFT':
+        if action in ('LEFT', 'UP'):
             self.current_index = max(0, self.current_index - 1)
             self.update_highlight()
-        elif action == 'RIGHT':
+        elif action in ('RIGHT', 'DOWN'):
             self.current_index = min(len(self.buttons) - 1, self.current_index + 1)
             self.update_highlight()
         elif action == 'A':
@@ -2480,29 +2534,43 @@ class ConfirmDialog(QDialog):
     def update_highlight(self):
         """更新按钮高亮状态"""
         for index, button in enumerate(self.buttons):
+            is_shutdown = hasattr(self, 'shutdown_button') and button == self.shutdown_button
             if index == self.current_index:
-                button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #45a049;
+                if is_shutdown:
+                    bg_color = "#ff5252"  # 亮红色
+                    border = "2px solid #ffffff"
+                else:
+                    bg_color = "#45a049"  # 深绿色
+                    border = "1px solid #93ffff"
+                
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {bg_color};
                         color: white;
-                        border: 1px solid #93ffff;
+                        border: {border};
                         padding: 20px 0;
                         font-size: 32px;
                         margin: 0;
                         width: 100%;
-                    }
+                        font-weight: bold;
+                    }}
                 """)
             else:
-                button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #4CAF50;
+                if is_shutdown:
+                    bg_color = "#f44336"  # 红色
+                else:
+                    bg_color = "#4CAF50"  # 绿色
+                
+                button.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {bg_color};
                         color: white;
                         border: none;
                         padding: 20px 0;
                         font-size: 32px;
                         margin: 0;
                         width: 100%;
-                    }
+                    }}
                 """)
 class LoadingDialog(QDialog):
     """通用加载窗口，显示一条提示信息并保持在最上层。"""
@@ -3137,14 +3205,13 @@ class LaunchOverlay(QWidget):
                 # 先绘制原图
                 painter.drawPixmap(0, 0, bg_scaled)
                 
-                # 添加渐变遮罩（从透明到半透明黑色）
-                gradient = QColor(0, 0, 0, 0)
-                gradient_end = QColor(0, 0, 0, 230)
+                # 添加整体变暗效果（半透明黑色遮罩）
+                painter.fillRect(dark_pixmap.rect(), QColor(0, 0, 0, 150))
+                
+                # 添加渐变遮罩效果（从上往下进一步加深）
                 linear_gradient = QLinearGradient(0, 0, 0, dark_pixmap.height())
-                linear_gradient.setColorAt(0, gradient)
-                linear_gradient.setColorAt(0.3, QColor(0, 0, 0, 100))
-                linear_gradient.setColorAt(1, gradient_end)
-                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                linear_gradient.setColorAt(0, QColor(0, 0, 0, 0))
+                linear_gradient.setColorAt(1, QColor(0, 0, 0, 100))
                 painter.fillRect(dark_pixmap.rect(), linear_gradient)
                 painter.end()
                 
@@ -3348,7 +3415,6 @@ class QuickStreamAppAddThread(QThread):
         super().__init__(parent)
         self.args = args if args else []
 
-
     def run(self):
         # 支持传入启动参数
         # 检查 QuickStreamAppAdd.exe 是否存在
@@ -3358,11 +3424,28 @@ class QuickStreamAppAddThread(QThread):
             QMessageBox.warning(None, "提示", "未找到 QuickStreamAppAdd.exe，无法执行相关操作。")
             self.finished_signal.emit()
             return
-        cmd = ["QuickStreamAppAdd.exe"] + self.args
+        cmdline = "QuickStreamAppAdd.exe " + " ".join(self.args)
+
         try:
-            proc = subprocess.Popen(cmd, shell=True)
-            proc.wait()
+            proc_info = win32process.CreateProcessAsUser(
+                EXPLORERTOKEN,
+                None,
+                cmdline,
+                None,
+                None,
+                False,
+                win32con.CREATE_NEW_PROCESS_GROUP,
+                None,
+                None,
+                win32process.STARTUPINFO()
+            )
+
+            process_handle = proc_info[0]
+
+            win32event.WaitForSingleObject(process_handle, win32event.INFINITE)
+
             print("QuickStreamAppAdd.exe 已结束")
+
         except Exception as e:
             print(f"QuickStreamAppAddThread error: {e}")
         self.finished_signal.emit()
@@ -3473,7 +3556,6 @@ class GameSelector(QWidget):
             'more': '工具',
             'favorite': '收藏',
             'quit': '最小化',
-            'settings': '设置',
             'screenshot': '游戏详情'
         }
 
@@ -3521,22 +3603,6 @@ class GameSelector(QWidget):
         """)
         self.quit_button.clicked.connect(self.on_button_clicked)
         self.quit_button.clicked.connect(self.exitbutton)
-
-        # 创建设置按钮
-        self.settings_button = QPushButton("*")
-        self.settings_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-        self.settings_button.setFont(QFont("Microsoft YaHei", 40))
-        self.settings_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """)
-        self.settings_button.clicked.connect(self.on_button_clicked)
-        self.settings_button.clicked.connect(self.show_settings_window)
 
         # 新增：截图按钮
         self.screenshot_button = QPushButton("*")
@@ -3706,8 +3772,7 @@ class GameSelector(QWidget):
         self.last_window_toggle_time = 0
         self.window_toggle_delay = 300  # 设置300毫秒的防抖延迟
 
-        # 将设置按钮添加到左侧布局
-        self.left_layout.addWidget(self.settings_button)
+        # 将按钮添加到左侧布局
         self.left_layout.addWidget(self.screenshot_button)
 
         # 初始化时隐藏悬浮窗
@@ -3763,11 +3828,11 @@ class GameSelector(QWidget):
                 self.control_button_modes[i] = 'image'
                 btn.setText("🗺️")
             elif i == 5:
+                self.control_button_modes[i] = 'settings'
+                btn.setText("⚙️")
+            elif i == 6:
                 self.control_button_modes[i] = 'sleep'
                 btn.setText("💤")
-            elif i == 6:
-                self.control_button_modes[i] = 'shutdown'
-                btn.setText("🔌")
             # 统一使用本类处理器，以支持首次点击只聚焦的行为
             btn.clicked.connect(lambda checked=False, idx=i: self.handle_control_button_click(idx))
             self.control_buttons.append(btn)
@@ -4026,7 +4091,7 @@ class GameSelector(QWidget):
                 def launch_tool(checked=False, path=app.get("path", "")):
                     self.hide_window()
                     if isinstance(path, str) and path.strip():
-                        subprocess.Popen(path, shell=True)
+                        run_as_user(path)
                 tool_action.triggered.connect(launch_tool)
             tray_menu.addMenu(tools_menu)
             tray_menu.addSeparator()
@@ -4716,7 +4781,6 @@ class GameSelector(QWidget):
         self.more_button.setText(self.button_texts['more'])
         self.favorite_button.setText(self.button_texts['favorite'])
         self.quit_button.setText(self.button_texts['quit'])
-        self.settings_button.setText(self.button_texts['settings'])
         self.screenshot_button.setText(self.button_texts['screenshot'])
         
         # 为所有按钮设置显示样式
@@ -4736,7 +4800,6 @@ class GameSelector(QWidget):
         self.more_button.setStyleSheet(button_style)
         self.favorite_button.setStyleSheet(button_style)
         self.quit_button.setStyleSheet(button_style)
-        self.settings_button.setStyleSheet(button_style)
         self.screenshot_button.setStyleSheet(button_style)
         
         # 重启计时器
@@ -4749,7 +4812,6 @@ class GameSelector(QWidget):
         self.more_button.setText("*")
         self.favorite_button.setText("*")
         self.quit_button.setText("*")
-        self.settings_button.setText("*")
         self.screenshot_button.setText("*")
         
         # 为所有按钮设置隐藏样式
@@ -4766,7 +4828,6 @@ class GameSelector(QWidget):
         self.more_button.setStyleSheet(hidden_style)
         self.favorite_button.setStyleSheet(hidden_style)
         self.quit_button.setStyleSheet(hidden_style)
-        self.settings_button.setStyleSheet(hidden_style)
         self.screenshot_button.setStyleSheet(hidden_style)
 
     def hide_window(self):
@@ -4887,11 +4948,9 @@ class GameSelector(QWidget):
                         self.sleep_system()
                 except Exception:
                     pass
-            elif mode == 'shutdown':
+            elif mode == 'settings':
                 try:
-                    self.confirm_dialog = ConfirmDialog("确认要关机吗", scale_factor=self.scale_factor)
-                    if self.confirm_dialog.exec_():
-                        self.shutdown_system()
+                    self.open_settings_dialog()
                 except Exception:
                     pass
         except Exception:
@@ -6297,8 +6356,8 @@ class GameSelector(QWidget):
         """在控制按钮上方显示窗口缩略图，下方显示文字标签"""
         labels_map = {
             4: '全部截图',
-            5: '系统休眠',
-            6: '系统关机'
+            5: '设置',
+            6: '系统休眠'
         }
 
         title = ''
@@ -7183,11 +7242,11 @@ class GameSelector(QWidget):
                             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                                 continue
                         if not already_running:
-                            os.startfile(tool_path)
+                            run_as_user(tool_path)
         if game_cmd:
             #self.showMinimized()
             # subprocess.Popen(game_cmd, shell=True)
-            os.startfile(game_cmd)  # 使用os.startfile启动游戏
+            run_as_user(game_cmd)  # 使用run_as_user启动游戏
             #self.showFullScreen()
             return
         # 新增：处理detached字段，优先启动detached中的.url
@@ -7195,31 +7254,31 @@ class GameSelector(QWidget):
         if detached_list:
             url_path = detached_list[0].strip('"')  # 去掉前后引号
             if url_path.lower().endswith('.url'):
-                os.startfile(url_path)
-            # 检查 game["name"] 是否能在 valid_apps["name"] 里找到
-            if not any(app["name"] == game["name"] for app in valid_apps):
-                print(f"未在 valid_apps 中找到 {game['name']}")
-                # 创建确认弹窗
-                self.confirm_dialog = ConfirmDialog("该游戏未绑定进程\n点击确定后将打开自定义进程页面", scale_factor=self.scale_factor)
-                result = self.confirm_dialog.exec_()  # 显示弹窗并获取结果
-                self.ignore_input_until = pygame.time.get_ticks() + 350  # 设置屏蔽时间为800毫秒
-                if result == QDialog.Accepted:  # 如果按钮被点击
-                    self.custom_valid_show(game["name"])
-                    return
-    def custom_valid_show(self, gamename):
-        settings_window = SettingsWindow(self)
-        settings_window.show_custom_valid_apps_dialog()
-        def fill_name_and_show():
-            # 找到刚刚弹出的dialog中的name_edit并填充
-            # 由于show_custom_valid_apps_dialog内部定义了name_edit变量，需通过遍历子控件查找
-            for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, QDialog) and widget.windowTitle() == "添加自定义游戏进程":
-                    for child in widget.findChildren(QLineEdit):
-                        if child.placeholderText().startswith("点击选择游戏名称"):
-                            child.setText(gamename)
-                            break
-                    break
-        QTimer.singleShot(100, fill_name_and_show)
+                run_as_user(url_path)
+            # # 检查 game["name"] 是否能在 valid_apps["name"] 里找到
+            # if not any(app["name"] == game["name"] for app in valid_apps):
+            #     print(f"未在 valid_apps 中找到 {game['name']}")
+            #     # 创建确认弹窗
+            #     self.confirm_dialog = ConfirmDialog("该游戏未绑定进程\n点击确定后将打开自定义进程页面", scale_factor=self.scale_factor)
+            #     result = self.confirm_dialog.exec_()  # 显示弹窗并获取结果
+            #     self.ignore_input_until = pygame.time.get_ticks() + 350  # 设置屏蔽时间为800毫秒
+            #     if result == QDialog.Accepted:  # 如果按钮被点击
+            #         self.custom_valid_show(game["name"])
+            #         return
+    # def custom_valid_show(self, gamename):
+    #     settings_window = SettingsWindow(self)
+    #     settings_window.show_custom_valid_apps_dialog()
+    #     def fill_name_and_show():
+    #         # 找到刚刚弹出的dialog中的name_edit并填充
+    #         # 由于show_custom_valid_apps_dialog内部定义了name_edit变量，需通过遍历子控件查找
+    #         for widget in QApplication.topLevelWidgets():
+    #             if isinstance(widget, QDialog) and widget.windowTitle() == "添加自定义游戏进程":
+    #                 for child in widget.findChildren(QLineEdit):
+    #                     if child.placeholderText().startswith("点击选择游戏名称"):
+    #                         child.setText(gamename)
+    #                         break
+    #                 break
+    #     QTimer.singleShot(100, fill_name_and_show)
     # 判断当前窗口是否全屏(当设置中开启时)
     def is_current_window_fullscreen(self):
         try:
@@ -7843,13 +7902,8 @@ class GameSelector(QWidget):
                     QTimer.singleShot(210, self.mouse_simulation)
                 elif action == 'START':  # START键打开游戏详情
                     self.open_selected_game_screenshot()
-                elif action == 'BACK':  # SELECT键打开设置
-                    if current_time < ((self.ignore_input_until)+500):
-                        return
-                    self.ignore_input_until = pygame.time.get_ticks() + 500 
-                    self.show_settings_window()
-                    self.mouse_simulation()
-                    QTimer.singleShot(10, lambda: pyautogui.moveTo(int(self.settings_button.mapToGlobal(self.settings_button.rect().center()).x()+100), int(self.settings_button.mapToGlobal(self.settings_button.rect().center()).y())+270))
+                elif action == 'BACK':  # SELECT键
+                    pass
 
         # 更新最后一次按键时间
         self.last_input_time = current_time
@@ -8003,19 +8057,6 @@ class GameSelector(QWidget):
             self.quit_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
             self.quit_button.setText("*")
             self.quit_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent; 
-                    border-radius: {int(20 * self.scale_factor)}px; 
-                    border: none;
-                    color: #888888;
-                    font-size: {int(16 * self.scale_factor)}px;
-                }}
-            """)
-        
-        if hasattr(self, 'settings_button'):
-            self.settings_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-            self.settings_button.setText("*")
-            self.settings_button.setStyleSheet(f"""
                 QPushButton {{
                     background-color: transparent; 
                     border-radius: {int(20 * self.scale_factor)}px; 
@@ -8399,7 +8440,7 @@ class GameSelector(QWidget):
             # 执行文件
             print(f"执行文件: {current_file['path']}")
             self.hide_window()
-            os.startfile(current_file["path"])
+            run_as_user(current_file["path"])
         self.floating_window.current_index = 0
         self.floating_window.update_highlight()
         self.floating_window.hide()
@@ -8408,11 +8449,6 @@ class GameSelector(QWidget):
         """显示设置窗口"""
         if not hasattr(self, 'settings_window') or self.settings_window is None:
             self.settings_window = SettingsWindow(self)
-        
-        # 计算悬浮窗位置
-        button_pos = self.settings_button.mapToGlobal(self.settings_button.rect().bottomLeft())
-        self.settings_window.move(button_pos.x(), button_pos.y() + 10)
-        
         self.settings_window.show()
 
     def is_admin(self):
@@ -9159,14 +9195,14 @@ class FloatingWindow(QWidget):
         
         # 位置动画：从顶部滑入
         pos_anim = QPropertyAnimation(self, b"pos")
-        pos_anim.setDuration(200)
+        pos_anim.setDuration(100)
         pos_anim.setStartValue(initial_pos)
         pos_anim.setEndValue(self._final_position)
         pos_anim.setEasingCurve(QEasingCurve.OutCubic)
         
         # 透明度动画：逐渐显示
         opacity_anim = QPropertyAnimation(self, b"windowOpacity")
-        opacity_anim.setDuration(400)
+        opacity_anim.setDuration(200)
         opacity_anim.setStartValue(0.0)
         opacity_anim.setEndValue(1.0)
         opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
