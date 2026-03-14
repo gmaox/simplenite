@@ -8,7 +8,7 @@ from PyQt5 import QtWidgets
 from PyQt5 import QtGui
 import pygame, math
 from PIL import Image, ImageFilter
-import win32gui,win32process,psutil,win32api,win32ui,win32security,win32event
+import win32gui,win32process,psutil,win32api,win32ui,win32security
 from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget
 from PyQt5.QtGui import QPainter, QPen, QBrush, QFont, QPixmap, QIcon, QColor, QLinearGradient, QKeySequence
 from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, QTimer, QPoint, QProcess, QPropertyAnimation, QRect, QObject, QEasingCurve, QParallelAnimationGroup
@@ -3442,7 +3442,11 @@ class QuickStreamAppAddThread(QThread):
 
             process_handle = proc_info[0]
 
-            win32event.WaitForSingleObject(process_handle, win32event.INFINITE)
+            while True:
+                exit_code = win32process.GetExitCodeProcess(process_handle)
+                if exit_code != win32con.STILL_ACTIVE:
+                    break
+                time.sleep(0.1)
 
             print("QuickStreamAppAdd.exe 已结束")
 
@@ -3890,7 +3894,7 @@ class GameSelector(QWidget):
             controller_name = controller_data['controller'].get_name()
             self.update_controller_status(controller_name)
         # 右侧文字
-        self.right_label = QLabel("A / 进入游戏        Y / 关闭游戏        X / 鼠标模拟        ≡ / 游戏菜单            📦️DeskGamix v0.95.5")
+        self.right_label = QLabel("A / 进入游戏        Y / 关闭游戏        X / 鼠标模拟        ≡ / 游戏菜单            📦️DeskGamix v0.95.6")
         self.right_label.setStyleSheet(f"""
             QLabel {{
                 font-family: "Microsoft YaHei"; 
