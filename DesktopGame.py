@@ -124,7 +124,7 @@ def load_apps():
                 pass
             data = {"apps": []}
 
-    ###下面俩行代码用于QuickStreamAppAdd的伪排序清除，若感到困惑可删除###
+    ###下面俩行代码用于SunshineAppManager的伪排序清除，若感到困惑可删除###
     for idx, entry in enumerate(data.get("apps", [])):
         entry["name"] = re.sub(r'^\d{2} ', '', entry.get("name", ""))
     # 仅保留 name 不是 Desktop/Steam Big Picture 且 image-path 存在且非空的条目
@@ -930,7 +930,7 @@ class ScreenshotWindow(QDialog):
             self.active_dialog = None    # 关闭后清空
             
         def on_cover_clicked():
-            self.qsaa_thread = QuickStreamAppAddThread(args=["-choosecover", str(self.game_name_label.text())])
+            self.qsaa_thread = SunshineAppManagerThread(args=["--choosecover", str(self.game_name_label.text())])
             if self.parent() and hasattr(self.parent(), "deep_reload_games"):
                 self.qsaa_thread.finished_signal.connect(self.parent().deep_reload_games)
             self.qsaa_thread.start()
@@ -1156,7 +1156,7 @@ class ScreenshotWindow(QDialog):
             self.ignore_input_until = pygame.time.get_ticks() + 350  
             if not result == QDialog.Accepted:  # 如果按钮没被点击
                 return
-            self.qsaa_thread = QuickStreamAppAddThread(args=["-delete", str(self.game_name_label.text())])
+            self.qsaa_thread = SunshineAppManagerThread(args=["--delete", str(self.game_name_label.text())])
             if self.parent() and hasattr(self.parent(), "deep_reload_games"):
                 self.qsaa_thread.finished_signal.connect(self.parent().deep_reload_games)
                 self.qsaa_thread.finished_signal.connect(self.safe_close)
@@ -2389,8 +2389,8 @@ class ConfirmDialog(QDialog):
         """立即关机的二次确认"""
         second_confirm = ConfirmDialog("确定立即关机吗？", scale_factor=self.scale_factor)
         if second_confirm.exec_():
-            self.confirm_action()
-
+            self.parent().shutdown_system() 
+            self.cancel_action()
     def confirm_action(self): 
         print("用户点击了确认按钮")
         # 使用淡出动画后再 accept
@@ -3408,7 +3408,7 @@ class LaunchOverlay(QWidget):
         self.focus_check_timer.start(200)
 
 
-class QuickStreamAppAddThread(QThread):
+class SunshineAppManagerThread(QThread):
     finished_signal = pyqtSignal()
 
     def __init__(self, args=None, parent=None):
@@ -3417,14 +3417,15 @@ class QuickStreamAppAddThread(QThread):
 
     def run(self):
         # 支持传入启动参数
-        # 检查 QuickStreamAppAdd.exe 是否存在
-        if not os.path.exists("QuickStreamAppAdd.exe"):
-            print("QuickStreamAppAdd.exe 未找到，无法执行。")
+        # 检查 SunshineAppManager.exe 是否存在
+        if not os.path.exists("SunshineAppManager.exe"):
+            print("SunshineAppManager.exe 未找到，无法执行。")
             # 弹窗告知用户
-            QMessageBox.warning(None, "提示", "未找到 QuickStreamAppAdd.exe，无法执行相关操作。")
+            QMessageBox.warning(None, "提示", "未找到 SunshineAppManager.exe，无法执行相关操作。")
             self.finished_signal.emit()
             return
-        cmdline = "QuickStreamAppAdd.exe " + " ".join(self.args)
+        # 构建命令行参数，正确拼接每个参数
+        cmdline = "SunshineAppManager.exe " + " ".join(f"\"{str(arg)}\"" for arg in self.args)
 
         try:
             proc_info = win32process.CreateProcessAsUser(
@@ -3448,10 +3449,10 @@ class QuickStreamAppAddThread(QThread):
                     break
                 time.sleep(0.1)
 
-            print("QuickStreamAppAdd.exe 已结束")
+            print("SunshineAppManager.exe 已结束")
 
         except Exception as e:
-            print(f"QuickStreamAppAddThread error: {e}")
+            print(f"SunshineAppManagerThread error: {e}")
         self.finished_signal.emit()
 
 class GameSelector(QWidget): 
@@ -8481,7 +8482,7 @@ class GameSelector(QWidget):
 
     def refresh_games(self, args=None):
         """刷新游戏列表，处理 extra_paths 中的快捷方式（线程安全）"""
-        self.qsaa_thread = QuickStreamAppAddThread(args=args)
+        self.qsaa_thread = SunshineAppManagerThread(args=args)
         self.qsaa_thread.finished_signal.connect(self.deep_reload_games)
         self.qsaa_thread.start()
         return
@@ -11053,24 +11054,6 @@ class SettingsWindow(QWidget):
         self.refresh_button.clicked.connect(parent.refresh_games)
         self.layout.addWidget(self.refresh_button)
 
-        # 添加快速添加运行中游戏按钮
-        self.quick_add_running_btn = QPushButton("-快速添加运行中游戏-")
-        self.quick_add_running_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
-                border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #555555;
-            }}
-        """)
-        self.quick_add_running_btn.clicked.connect(self.quick_add_running_game)
-        self.layout.addWidget(self.quick_add_running_btn)
-
         # 添加切换 killexplorer 状态的按钮
         self.killexplorer_button = QPushButton(f"沉浸模式 {'√' if settings.get('killexplorer', False) else '×'}")
         self.killexplorer_button.setStyleSheet(f"""
@@ -11298,128 +11281,6 @@ class SettingsWindow(QWidget):
         y = 100 * self.parent().scale_factor
         about_dialog.move(x, y)
         about_dialog.exec_()
-
-    def quick_add_running_game(self):
-        """快速添加运行中游戏"""
-        # 弹出进程选择窗口
-        proc_dialog = QDialog(self)
-        proc_dialog.setWindowTitle("选择运行中游戏进程")
-        proc_dialog.setWindowFlags(Qt.FramelessWindowHint | Qt.Popup)
-        proc_dialog.setStyleSheet(f"""
-            QDialog {{
-                background-color: rgba(46, 46, 46, 0.98);
-                border-radius: {int(10 * self.parent().scale_factor)}px;
-                border: {int(2 * self.parent().scale_factor)}px solid #444444;
-            }}
-        """)
-        vbox = QVBoxLayout(proc_dialog)
-        vbox.setSpacing(int(10 * self.parent().scale_factor))
-        vbox.setContentsMargins(
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor)
-        )
-        label = QLabel("选择一个运行中游戏进程，加入到游戏列表。（steam/EPIC等启动器需求游戏推荐steam等软件中创建快捷方式用QSAA导入）")
-        label.setStyleSheet("color: white; font-size: 16px;")
-        vbox.addWidget(label)
-        # 枚举所有有前台窗口且不是隐藏的进程
-        hwnd_pid_map = {}
-        def enum_window_callback(hwnd, lParam):
-            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                hwnd_pid_map[pid] = hwnd
-            return True
-        win32gui.EnumWindows(enum_window_callback, None)
-
-        # 收集进程信息
-        proc_list = []
-        for proc in psutil.process_iter(['pid', 'name', 'exe']):
-            try:
-                if (
-                    proc.info['pid'] in hwnd_pid_map
-                    and proc.info['exe']
-                    and proc.info['name'].lower() != "explorer.exe"
-                    and proc.info['name'].lower() != "desktopgame.exe"   # 屏蔽自身
-                    and proc.info['name'].lower() != "textinputhost.exe"       
-                ):
-                    proc_list.append(proc)
-            except Exception:
-                continue
-
-        if not proc_list:
-            label = QLabel("没有检测到可用进程")
-            label.setStyleSheet("color: white; font-size: 16px;")
-            vbox.addWidget(label)
-        else:
-            for proc in proc_list:
-                proc_name = proc.info.get('name', '未知')
-                proc_exe = proc.info.get('exe', '')
-                # 创建横向布局
-                hbox = QHBoxLayout()
-                hbox.setSpacing(8)
-                # 进程按钮
-                btn = QPushButton(f"{proc_name} ({proc_exe})")
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: #444444;
-                        color: white;
-                        border-radius: {int(8 * self.parent().scale_factor)}px;
-                        font-size: {int(14 * self.parent().scale_factor)}px;
-                        padding: {int(8 * self.parent().scale_factor)}px;
-                        text-align: left;
-                    }}
-                    QPushButton:hover {{
-                        background-color: #555555;
-                    }}
-                """)
-                btn.clicked.connect(lambda checked, exe=proc.info['exe']: self.run_quick_add_and_restart(exe, proc_dialog))
-                hbox.addWidget(btn)
-                # 文件夹小按钮
-                folder_btn = QPushButton("📁")
-                folder_btn.setFixedSize(32, 32)
-                folder_btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: #666666;
-                        color: white;
-                        border-radius: 6px;
-                        font-size: 18px;
-                        padding: 0px;
-                    }}
-                    QPushButton:hover {{
-                        background-color: #888888;
-                    }}
-                """)
-                def open_file_dialog(proc_exe=proc_exe):
-                    # 打开文件选择器，初始目录为exe所在目录
-                    start_dir = os.path.dirname(proc_exe) if proc_exe and os.path.exists(proc_exe) else ""
-                    file_dialog = QFileDialog(proc_dialog)
-                    file_dialog.setWindowTitle("手动选择要添加的游戏文件")
-                    file_dialog.setNameFilter("可执行文件 (*.exe *.lnk)")
-                    file_dialog.setFileMode(QFileDialog.ExistingFile)
-                    if start_dir:
-                        file_dialog.setDirectory(start_dir)
-                    if file_dialog.exec_():
-                        selected_file = file_dialog.selectedFiles()[0]
-                        self.run_quick_add_and_restart(selected_file, proc_dialog)
-                folder_btn.clicked.connect(lambda checked, proc_exe=proc_exe: open_file_dialog(proc_exe))
-                hbox.addWidget(folder_btn)
-                vbox.addLayout(hbox)
-
-        proc_dialog.setLayout(vbox)
-        x = 350 * self.parent().scale_factor
-        y = 100 * self.parent().scale_factor
-        proc_dialog.move(x, y)
-        proc_dialog.show()
-
-    def run_quick_add_and_restart(self, exe_path, dialog):
-        """调用QuickStreamAppAdd.exe并重启"""
-        dialog.accept()
-        # 启动QuickStreamAppAdd.exe并传递exe路径参数
-        self.qsaa_thread = QuickStreamAppAddThread(args=["-addlnk", str(exe_path)])
-        if self.parent() and hasattr(self.parent(), "deep_reload_games"):
-            self.qsaa_thread.finished_signal.connect(self.parent().deep_reload_games)
-        self.qsaa_thread.start()
 
     def show_play_time_rank_window(self):
         """显示游戏时长排名悬浮窗"""
