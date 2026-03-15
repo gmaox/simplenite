@@ -9,7 +9,7 @@ from PyQt5 import QtGui
 import pygame, math
 from PIL import Image, ImageFilter
 import win32gui,win32process,psutil,win32api,win32ui,win32security
-from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget
+from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget, QStackedWidget
 from PyQt5.QtGui import QPainter, QPen, QBrush, QFont, QPixmap, QIcon, QColor, QLinearGradient, QKeySequence
 from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, QTimer, QPoint, QProcess, QPropertyAnimation, QRect, QObject, QEasingCurve, QParallelAnimationGroup
 import subprocess, time, os,win32con, ctypes, re, win32com.client, ctypes, time, pyautogui
@@ -300,8 +300,10 @@ def get_explorer_token():
     )
 EXPLORERTOKEN = get_explorer_token()
 def run_as_user(path):
+    # 去除引号
+    path = path.strip('"')
     cmd = f'cmd.exe /c start "" "{path}"'
-
+    print(f"以当前用户权限启动: {cmd}")
     win32process.CreateProcessAsUser(
         EXPLORERTOKEN,
         None,
@@ -2288,7 +2290,7 @@ def get_dialog_qss(scale_factor):
     return f"""
             QDialog {{
                 background-color: #2E2E2E;
-                border: {int(5 * scale_factor)}px solid #4CAF50;
+                border: {int(5 * scale_factor)}px solid #2E7D9B;
                 border-radius: {int(8 * scale_factor)}px;
             }}
             QLabel {{
@@ -2298,7 +2300,7 @@ def get_dialog_qss(scale_factor):
                 text-align: center;
             }}
             QPushButton {{
-                background-color: #4CAF50;
+                background-color: #2E7D9B;
                 color: white;
                 border: none;
                 padding: {int(20 * scale_factor)}px 0;
@@ -2537,10 +2539,10 @@ class ConfirmDialog(QDialog):
             is_shutdown = hasattr(self, 'shutdown_button') and button == self.shutdown_button
             if index == self.current_index:
                 if is_shutdown:
-                    bg_color = "#ff5252"  # 亮红色
+                    bg_color = "#f44336"  # 红色
                     border = "2px solid #ffffff"
                 else:
-                    bg_color = "#45a049"  # 深绿色
+                    bg_color = "#245A71"  # 深绿色
                     border = "1px solid #93ffff"
                 
                 button.setStyleSheet(f"""
@@ -2557,9 +2559,9 @@ class ConfirmDialog(QDialog):
                 """)
             else:
                 if is_shutdown:
-                    bg_color = "#f44336"  # 红色
+                    bg_color = "#cd4040"  # 红色
                 else:
-                    bg_color = "#4CAF50"  # 绿色
+                    bg_color = "#2E7D9B"  # 绿色
                 
                 button.setStyleSheet(f"""
                     QPushButton {{
@@ -2612,7 +2614,7 @@ class LoadingDialog(QDialog):
             self.progress.setFixedHeight(int(10 * self.scale_factor))
             self.progress.setRange(0, 0)  # 不确定进度的忙碌指示器
             # 样式与对话框风格对齐
-            self.progress.setStyleSheet("QProgressBar { background-color: rgba(255,255,255,0.06); border-radius: 5px; } QProgressBar::chunk { background-color: #4CAF50; }")
+            self.progress.setStyleSheet("QProgressBar { background-color: rgba(255,255,255,0.06); border-radius: 5px; } QProgressBar::chunk { background-color: #2E7D9B; }")
             layout.addWidget(self.progress)
         except Exception:
             self.progress = None
@@ -2829,9 +2831,9 @@ class LaunchOverlay(QWidget):
             } 
             QProgressBar::chunk { 
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #4CAF50,
+                    stop:0 #2E7D9B,
                     stop:0.5 #66BB6A,
-                    stop:1 #4CAF50);
+                    stop:1 #2E7D9B);
                 border-radius: 2px;
             }
         """)
@@ -4955,7 +4957,7 @@ class GameSelector(QWidget):
                     pass
             elif mode == 'settings':
                 try:
-                    self.open_settings_dialog()
+                    self.show_settings_window()
                 except Exception:
                     pass
         except Exception:
@@ -7643,6 +7645,11 @@ class GameSelector(QWidget):
         # 检查 floating_window 的 confirm_dialog
         if getattr(self, 'floating_window', None) and hasattr(self.floating_window, 'confirm_dialog') and self.floating_window.confirm_dialog and self.floating_window.confirm_dialog.isVisible():
             self.floating_window.handle_gamepad_input(action, firstinput)
+            self.ignore_input_until = pygame.time.get_ticks() + 300 
+            return
+        # 检查 settings_window
+        if hasattr(self, 'settings_window') and self.settings_window and self.settings_window.isVisible():
+            self.settings_window.handle_gamepad_input(action)
             self.ignore_input_until = pygame.time.get_ticks() + 300 
             return
         
@@ -10959,350 +10966,420 @@ class ControllerMapping:
         #print(f"Detected controller: {self.controller_name}")
 
 class SettingsWindow(QWidget):
+    """
+    仿 Nintendo Switch 设置界面风格的设置窗口。
+    左侧为类别列表，右侧为当前类别的详细设置。
+    当前仅实现“主机”页，其它类别为占位。
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Popup)
+        self.parent_window = parent
+
+        # 设置为子窗口，附着于主窗口
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Popup )
         self.setStyleSheet(f"""
             QWidget {{
-                background-color: rgba(46, 46, 46, 0.95);
-                border-radius: {int(10 * parent.scale_factor)}px;
-                border: {int(2 * parent.scale_factor)}px solid #444444;
+                background-color: #1e1e1e;
             }}
         """)
+
+        scale = parent.scale_factor
+        # 设置与主窗口相同的大小
+        self.setFixedSize(parent.width(),(parent.height() - int(80 * scale)))  # 高度略小于主窗口，留出顶部空间
+        # 定位到主窗口的位置
+        self.move(parent.x(), parent.y())
+
+        self.focused_index = 0
+        self.focusable_widgets = []
+        self.is_control_selected = False  # 标记是否选中了控件
+        self.current_area = 'right'  # 当前焦点区域：'left'（左侧类别栏）或 'right'（右侧按钮区域）
+
+        # 整体水平布局：左侧类别列表 + 右侧内容
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(
+            int(40 * scale), int(25 * scale), int(40 * scale), int(25 * scale)
+        )
+        main_layout.setSpacing(int(30 * scale))
+
+        # 左侧：类别列表区域（模仿 Switch 左边栏）
+        left_container = QWidget()
+        left_container.setFixedWidth(int(520 * scale))  # 左侧宽度设置为现在的2倍
+        left_container.setStyleSheet("""
+            QWidget {
+                background-color: #2d2d2d;
+                border-radius: 6px;
+            }
+        """)
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(int(10 * scale), int(10 * scale), int(10 * scale), int(10 * scale))
+        left_layout.setSpacing(int(4 * scale))
+
+        # 顶部“设置”标题行（带齿轮图标）
+        title_layout = QHBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(int(8 * scale))
         
-        self.layout = QVBoxLayout(self)
-        self.layout.setSpacing(int(5 * parent.scale_factor))
-        # 添加调整主页游戏数量的选项
-        self.buttonsindexset_label = QLabel(f"主页游戏数量: {parent.buttonsindexset}")
-        self.buttonsindexset_label.setStyleSheet(f"color: white; font-size: {int(16 * parent.scale_factor)}px;")
-        self.buttonsindexset_label.setFixedHeight(int(30 * parent.scale_factor))  # 固定高度为30像素
-        self.layout.addWidget(self.buttonsindexset_label)
+        # 齿轮图标
+        gear_icon = QLabel()
+        gear_icon.setText("⚙")
+        gear_icon.setStyleSheet(f"font-size: {int(32 * scale)}px; color: #ffffff;")
+        gear_icon.setFixedSize(int(48 * scale), int(48 * scale))
+        title_layout.addWidget(gear_icon)
+        
+        # 设置标题
+        title_label = QLabel("设置")
+        title_label.setStyleSheet(f"color: #ffffff; font-size: {int(44 * scale)}px;")
+        title_layout.addWidget(title_label)
+        
+        title_widget = QWidget()
+        title_widget.setLayout(title_layout)
+        title_widget.setFixedHeight(int(80 * scale))
+        left_layout.addWidget(title_widget)
+
+        # 类别按钮（这里只实现“主机”，其余是占位）
+        self.category_buttons = []
+
+        def add_category(text, key, selected=False):
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setChecked(selected)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    text-align: left;
+                    padding-left: {int(16 * scale)}px;
+                    padding-top: {int(24 * scale)}px;
+                    padding-bottom: {int(24 * scale)}px;
+                    border-radius: {int(4 * scale)}px;
+                    border: {int(2 * scale)}px solid transparent;
+                    color: #ffffff;
+                    font-size: {int(24 * scale)}px;
+                    background-color: transparent;
+                }}
+                QPushButton:hover {{
+                    background-color: #3d3d3d;
+                }}
+                QPushButton:checked {{
+                    border: {int(2 * scale)}px solid #00bfff;
+                    background-color: #1e3a5f;
+                }}
+            """)
+            btn.clicked.connect(lambda _=None, k=key: self.switch_category(k))
+            left_layout.addWidget(btn)
+            self.category_buttons.append((key, btn))
+
+        add_category("主机", "console", True)
+        add_category("游玩时长", "play_time")
+        add_category("关于", "about")
+
+        left_layout.addStretch()
+
+        # 右侧：内容区域（StackedWidget）
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(int(10 * scale))
+
+        # 右上角当前类别标题
+        self.current_title = QLabel("主机")
+        self.current_title.setStyleSheet(f"color: #ffffff; font-size: {int(22 * scale)}px;")
+        self.current_title.setFixedHeight(int(80 * scale))
+        right_layout.addWidget(self.current_title)
+
+        # 标题下方的细线
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #444444;")
+        line.setFixedHeight(int(1 * scale))
+        right_layout.addWidget(line)
+
+        self.pages = QStackedWidget()
+        right_layout.addWidget(self.pages)
+
+        # 创建各个页面
+        self.console_page = self._create_console_page(scale)
+        self.placeholder_page = self._create_placeholder_page(scale)
+        self.play_time_page = self._create_play_time_page(scale)
+        self.about_page = self._create_about_page(scale)
+
+        self.pages.addWidget(self.console_page)     # index 0 - 主机
+        self.pages.addWidget(self.placeholder_page) # index 1 - 其它
+        self.pages.addWidget(self.play_time_page)   # index 2 - 游玩时长
+        self.pages.addWidget(self.about_page)       # index 3 - 关于
+
+        main_layout.addWidget(left_container)
+        main_layout.addWidget(right_container, 1)
+
+        # 默认选中主机
+        self.switch_category("console")
+
+    # -------------------- 页面构建 --------------------
+    def _create_console_page(self, scale: float) -> QWidget:
+        """主机设置页：将原先所有设置项整理到此处"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(int(8 * scale))
+
+        # 一行：主页游戏数量
+        row1 = QWidget()
+        row1_layout = QHBoxLayout(row1)
+        row1_layout.setContentsMargins(0, 0, 0, 0)
+        row1_layout.setSpacing(int(12 * scale))
+
+        label1 = QLabel("主页游戏数量")
+        label1.setStyleSheet(f"color: #ffffff; font-size: {int(28 * scale)}px;")
+        row1_layout.addWidget(label1)
+        row1_layout.addStretch()
+
+        self.buttonsindexset_label = QLabel(f"{self.parent_window.buttonsindexset}")
+        self.buttonsindexset_label.setStyleSheet(f"color: #00bfff; font-size: {int(28 * scale)}px;")
+        row1_layout.addWidget(self.buttonsindexset_label)
+
+        layout.addWidget(row1)
 
         self.buttonsindexset_slider = QSlider(Qt.Horizontal)
         self.buttonsindexset_slider.setMinimum(4)
         self.buttonsindexset_slider.setMaximum(12)
-        self.buttonsindexset_slider.setValue(parent.buttonsindexset)
+        self.buttonsindexset_slider.setValue(self.parent_window.buttonsindexset)
         self.buttonsindexset_slider.valueChanged.connect(self.update_buttonsindexset)
-        self.layout.addWidget(self.buttonsindexset_slider)
+        self.buttonsindexset_slider.setFixedHeight(int(24 * scale))
+        layout.addWidget(self.buttonsindexset_slider)
 
-        # 添加调整 row_count 的选项
-        self.row_count_label = QLabel(f"每行游戏数量(所有处): {parent.row_count}")
-        self.row_count_label.setStyleSheet(f"color: white; font-size: {int(16 * parent.scale_factor)}px;")
-        self.row_count_label.setFixedHeight(int(30 * parent.scale_factor))  # 固定高度为30像素
-        self.layout.addWidget(self.row_count_label)
+        # 一行：每行游戏数量
+        row2 = QWidget()
+        row2_layout = QHBoxLayout(row2)
+        row2_layout.setContentsMargins(0, 0, 0, 0)
+        row2_layout.setSpacing(int(12 * scale))
+
+        label2 = QLabel("每行游戏数量（所有处）")
+        label2.setStyleSheet(f"color: #ffffff; font-size: {int(28 * scale)}px;")
+        row2_layout.addWidget(label2)
+        row2_layout.addStretch()
+
+        self.row_count_label = QLabel(f"{self.parent_window.row_count}")
+        self.row_count_label.setStyleSheet(f"color: #00bfff; font-size: {int(28 * scale)}px;")
+        row2_layout.addWidget(self.row_count_label)
+
+        layout.addWidget(row2)
 
         self.row_count_slider = QSlider(Qt.Horizontal)
         self.row_count_slider.setMinimum(4)
         self.row_count_slider.setMaximum(10)
-        self.row_count_slider.setValue(parent.row_count)
+        self.row_count_slider.setValue(self.parent_window.row_count)
         self.row_count_slider.valueChanged.connect(self.update_row_count)
-        self.layout.addWidget(self.row_count_slider)
+        self.row_count_slider.setFixedHeight(int(24 * scale))
+        layout.addWidget(self.row_count_slider)
 
+        # 分割线
+        line1 = QFrame()
+        line1.setFrameShape(QFrame.HLine)
+        line1.setStyleSheet("color: #444444;")
+        layout.addWidget(line1)
 
-
-        # 添加查看游戏时间排名按钮
-        self.play_time_rank_button = QPushButton("查看游玩时长汇总")
-        self.play_time_rank_button.setStyleSheet(f"""
+        # 行：重启程序
+        self.restart_button = QPushButton("重启程序")
+        self.restart_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #00bfff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #1e3a5f;
             }}
         """)
-        self.play_time_rank_button.clicked.connect(self.show_play_time_rank_window)
-        self.layout.addWidget(self.play_time_rank_button)
+        self.restart_button.clicked.connect(self.restart_program)
+        layout.addWidget(self.restart_button)
 
-        # 添加重启程序按钮
-        restart_button = QPushButton("重启程序")
-        restart_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
-                border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #555555;
-            }}
-        """)
-        restart_button.clicked.connect(self.restart_program)
-        self.layout.addWidget(restart_button)
-
-        # 添加刷新游戏按钮
-        self.refresh_button = QPushButton("---管理---")
+        # 行：管理（刷新游戏）
+        self.refresh_button = QPushButton("管理游戏列表")
         self.refresh_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(15 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #00bfff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #1e3a5f;
             }}
         """)
-        self.refresh_button.clicked.connect(parent.refresh_games)
-        self.layout.addWidget(self.refresh_button)
+        self.refresh_button.clicked.connect(self.parent_window.refresh_games)
+        layout.addWidget(self.refresh_button)
 
-        # 添加切换 killexplorer 状态的按钮
-        self.killexplorer_button = QPushButton(f"沉浸模式 {'√' if settings.get('killexplorer', False) else '×'}")
+        # 分割线
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.HLine)
+        line2.setStyleSheet("color: #444444;")
+        layout.addWidget(line2)
+
+        # 行：沉浸模式
+        self.killexplorer_button = QPushButton(
+            f"沉浸模式  {'开' if settings.get('killexplorer', False) else '关'}"
+        )
         self.killexplorer_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #3d3d3d;
             }}
         """)
         self.killexplorer_button.clicked.connect(self.toggle_killexplorer)
-        self.layout.addWidget(self.killexplorer_button)
-        #self.custom_valid_apps_button = QPushButton("-自定义游戏进程列表-")
-        #self.custom_valid_apps_button.setStyleSheet(f"""
-        #    QPushButton {{
-        #        background-color: #444444;
-        #        color: white;
-        #        text-align: center;
-        #        padding: {int(10 * parent.scale_factor)}px;
-        #        border: none;
-        #        font-size: {int(16 * parent.scale_factor)}px;
-        #    }}
-        #    QPushButton:hover {{
-        #        background-color: #555555;
-        #    }}
-        #""")
-        #self.custom_valid_apps_button.clicked.connect(self.show_del_custom_valid_apps_dialog)
-        #self.layout.addWidget(self.custom_valid_apps_button)
-        # 添加回到主页时尝试冻结运行中的游戏按钮
-        self.freeze_button = QPushButton(f"回主页时尝试冻结游戏 {'√' if settings.get('freeze', False) else '×'}")
+        layout.addWidget(self.killexplorer_button)
+
+        # 行：回主页时尝试冻结游戏
+        self.freeze_button = QPushButton(
+            f"回主页时尝试冻结游戏  {'开' if settings.get('freeze', False) else '关'}"
+        )
         self.freeze_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #3d3d3d;
             }}
         """)
         self.freeze_button.clicked.connect(self.toggle_freeze)
-        self.layout.addWidget(self.freeze_button)
+        layout.addWidget(self.freeze_button)
 
-        self.open_folder_button = QPushButton("开启/关闭-开机自启")
+        # 行：开机自启
+        self.open_folder_button = QPushButton("开启/关闭开机自启")
         self.open_folder_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #3d3d3d;
             }}
         """)
         self.open_folder_button.clicked.connect(self.is_startup_enabled)
-        self.layout.addWidget(self.open_folder_button)
+        layout.addWidget(self.open_folder_button)
 
-        # 添加打开主页面快捷键设置按钮
+        # 分割线
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.HLine)
+        line3.setStyleSheet("color: #444444;")
+        layout.addWidget(line3)
+
+        # 行：主页快捷键（可点击的按钮）
+        self.hotkey_row_button = QPushButton()
+        hotkey_layout = QHBoxLayout(self.hotkey_row_button)
+        hotkey_layout.setContentsMargins(0, 0, 0, 0)
+        hotkey_layout.setSpacing(int(12 * scale))
+
+        hotkey_title = QLabel("打开主页面快捷键")
+        hotkey_title.setStyleSheet(f"color: #ffffff; font-size: {int(28 * scale)}px;")
+        hotkey_layout.addWidget(hotkey_title)
+        hotkey_layout.addStretch()
+
         self.home_page_hotkey = settings.get("home_page_hotkey", None)
         hotkey_text = self.home_page_hotkey if self.home_page_hotkey else "未设置"
-        self.hotkey_label = QLabel(f"打开主页面快捷键: {hotkey_text}")
-        self.hotkey_label.setStyleSheet(f"color: white; font-size: {int(16 * parent.scale_factor)}px;")
-        self.hotkey_label.setFixedHeight(int(30 * parent.scale_factor))
-        self.layout.addWidget(self.hotkey_label)
+        self.hotkey_label = QLabel(hotkey_text)
+        self.hotkey_label.setStyleSheet(f"color: #00bfff; font-size: {int(28 * scale)}px;")
+        hotkey_layout.addWidget(self.hotkey_label)
 
-        self.hotkey_button = QPushButton("设置快捷键")
-        self.hotkey_button.setStyleSheet(f"""
+        self.hotkey_row_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #444444;
-                color: white;
-                text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
-                background-color: #555555;
+                background-color: #3d3d3d;
             }}
         """)
-        self.hotkey_button.clicked.connect(self.set_home_page_hotkey)
-        self.layout.addWidget(self.hotkey_button)
+        self.hotkey_row_button.clicked.connect(self.set_home_page_hotkey)
+        layout.addWidget(self.hotkey_row_button)
 
-        # 在其他按钮之后添加关闭程序按钮
+        # 分割线
+        line4 = QFrame()
+        line4.setFrameShape(QFrame.HLine)
+        line4.setStyleSheet("color: #444444;")
+        layout.addWidget(line4)
+
+        # 行：关闭程序（红色）
         self.close_program_button = QPushButton("关闭程序")
         self.close_program_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: BLACK; 
+                background-color: #ff4b4b;
                 color: white;
                 text-align: center;
-                padding: {int(10 * parent.scale_factor)}px;
+                padding: {int(16 * scale)}px 0;
+                border-radius: {int(4 * scale)}px;
                 border: none;
-                font-size: {int(16 * parent.scale_factor)}px;
+                font-size: {int(28 * scale)}px;
             }}
             QPushButton:hover {{
                 background-color: #ff6666;
             }}
         """)
         self.close_program_button.clicked.connect(self.close_program)
-        self.layout.addWidget(self.close_program_button)
-        
-        self.asdasgg_label = QLabel(
-            '<span style="color: white;">'
-            '<a href="#" style="color: white; text-decoration: none;">（提示＆关于）</a>'
-            '</span>'
-        )
-        self.asdasgg_label.setTextFormat(Qt.RichText)
-        self.asdasgg_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
-        self.asdasgg_label.setOpenExternalLinks(False)
-        self.asdasgg_label.setFixedHeight(int(30 * parent.scale_factor))
-        self.asdasgg_label.setAlignment(Qt.AlignCenter)
-        self.asdasgg_label.linkActivated.connect(lambda _: self.show_about_dialog())
-        self.layout.addWidget(self.asdasgg_label)
+        layout.addWidget(self.close_program_button)
 
-    def show_about_dialog(self):
-        """显示关于窗口"""
-        about_dialog = QDialog(self)
-        about_dialog.setWindowTitle("关于 DeskGamix")
-        about_dialog.setWindowFlags(Qt.FramelessWindowHint | Qt.Popup)
-        about_dialog.setStyleSheet(f"""
-            QDialog {{
-                background-color: rgba(46, 46, 46, 0.98);
-                border-radius: {int(15 * self.parent().scale_factor)}px;
-                border: {int(2 * self.parent().scale_factor)}px solid #444444;
-            }}
-        """)
-        about_dialog.setFixedWidth(int(1200 * self.parent().scale_factor))
-        layout = QVBoxLayout(about_dialog)
-        layout.setSpacing(int(18 * self.parent().scale_factor))
-        layout.setContentsMargins(
-            int(30 * self.parent().scale_factor),
-            int(30 * self.parent().scale_factor),
-            int(30 * self.parent().scale_factor),
-            int(30 * self.parent().scale_factor)
-        )
-    
-        # 顶部图标和标题
-        icon_title_layout = QHBoxLayout()
-        icon_label = QLabel()
-        icon_pix = QPixmap("./_internal/fav.ico").scaled(int(36 * self.parent().scale_factor), int(36 * self.parent().scale_factor), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        icon_label.setPixmap(icon_pix)
-        icon_label.setFixedSize(int(36 * self.parent().scale_factor), int(36 * self.parent().scale_factor))
-        icon_title_layout.addWidget(icon_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-        title_label = QLabel("DeskGamix")
-        title_label.setStyleSheet(f"color: white; font-size: {int(26 * self.parent().scale_factor)}px; font-weight: bold;")
-        icon_title_layout.addWidget(title_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-        icon_title_layout.addStretch()
-        layout.addLayout(icon_title_layout)
-    
-        # 软件简介
-        intro = QLabel("桌面游戏启动器\n"
-                       "支持手柄一键启动、收藏、截图等功能，"
-                       "支持自定义快捷方式、进程管理、游戏冻结等多种实用功能。\n"
-                       "专为Windows手柄操作优化。\n长按start+back打开鼠标映射。"
-                       "在手柄鼠标映射启用时点击系统托盘图标可停止映射\n\n"
-                       "手柄鼠标映射键位操作示意图：")
-        intro.setStyleSheet(f"color: white; font-size: {int(18 * self.parent().scale_factor)}px;")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-    
-        # 手柄映射示意图
-        #'<a href="https://wwse.lanzn.com/b00uz4bjmd" style="color:#93ffff;">蓝奏（密码:85jl）</a>　|　'
-        title_label = QLabel(
-            '<a href="https://github.com/gmaox/DeskGamix" style="color:#93ffff;">GitHub</a>　|　'
-            '<a href="https://space.bilibili.com/258889407" style="color:#93ffff;">B站主页</a>'
-        )
-        title_label.setStyleSheet(f"color: white; font-size: {int(26 * self.parent().scale_factor)}px; ")
-        title_label.setOpenExternalLinks(True)
-        icon_title_layout.addWidget(title_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-        img_label = QLabel()
-        try:
-            pixmap = QPixmap("./_internal/1.png").scaled(
-                int(1150 * self.parent().scale_factor),
-                int(660 * self.parent().scale_factor),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            img_label.setPixmap(pixmap)
-        except Exception:
-            img_label.setText("未找到1.png")
-        img_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(img_label)
-    
-        # 链接
-        #link_label = QLabel(
-        #    '<a href="https://github.com/DeskGamix/DeskGamix" style="color:#93ffff;">GitHub主页</a>　|　'
-        #    '<a href="https://space.bilibili.com/349308" style="color:#93ffff;">B站主页</a>'
-        #)
-        #link_label.setStyleSheet(f"color: #93ffff; font-size: {int(18 * self.parent().scale_factor)}px;")
-        #link_label.setAlignment(Qt.AlignCenter)
-        #link_label.setOpenExternalLinks(True)
-        #layout.addWidget(link_label)
-    
-        ## 关闭按钮
-        #close_btn = QPushButton("关闭")
-        #close_btn.setStyleSheet(f"""
-        #    QPushButton {{
-        #        background-color: #444444;
-        #        color: white;
-        #        border-radius: {int(8 * self.parent().scale_factor)}px;
-        #        font-size: {int(16 * self.parent().scale_factor)}px;
-        #        padding: {int(10 * self.parent().scale_factor)}px {int(30 * self.parent().scale_factor)}px;
-        #    }}
-        #    QPushButton:hover {{
-        #        background-color: #555555;
-        #    }}
-        #""")
-        #close_btn.clicked.connect(about_dialog.accept)
-        #layout.addWidget(close_btn, alignment=Qt.AlignCenter)
-    
-        about_dialog.setLayout(layout)
-        # 居中显示
-        parent_geom = self.parent().geometry()
-        x = parent_geom.x() + (parent_geom.width() - about_dialog.width()) // 2
-        y = 100 * self.parent().scale_factor
-        about_dialog.move(x, y)
-        about_dialog.exec_()
+        layout.addStretch()
 
-    def show_play_time_rank_window(self):
-        """显示游戏时长排名悬浮窗"""
-        # 创建悬浮窗口
-        self.add_item_window = QWidget(self, Qt.Popup)
-        self.add_item_window.setWindowFlags(Qt.FramelessWindowHint | Qt.Popup)
-        self.add_item_window.setStyleSheet(f"""
-            QWidget {{
-                background-color: rgba(46, 46, 46, 0.98);
-                border-radius: {int(15 * self.parent().scale_factor)}px;
-                border: {int(2 * self.parent().scale_factor)}px solid #444444;
-            }}
-        """)
-        self.add_item_window.setMinimumWidth(int(500 * self.parent().scale_factor))
-        layout = QVBoxLayout(self.add_item_window)
-        layout.setSpacing(int(15 * self.parent().scale_factor))
-        layout.setContentsMargins(
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor),
-            int(20 * self.parent().scale_factor)
-        )
+        # 定义可聚焦控件列表
+        self.focusable_widgets_console = [
+            self.buttonsindexset_slider,
+            self.row_count_slider,
+            self.restart_button,
+            self.refresh_button,
+            self.killexplorer_button,
+            self.freeze_button,
+            self.open_folder_button,
+            self.hotkey_row_button,
+            self.close_program_button
+        ]
+
+        return page
+
+    def _create_placeholder_page(self, scale: float) -> QWidget:
+        """暂未实现的类别占位页"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(int(10 * scale))
+
+        label = QLabel("此类别暂未提供可配置项目。")
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(f"color: #777777; font-size: {int(18 * scale)}px;")
+        layout.addStretch()
+        layout.addWidget(label)
+        layout.addStretch()
+        return page
+
+    def _create_play_time_page(self, scale: float) -> QWidget:
+        """游玩时长汇总页"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(int(15 * scale))
 
         # 获取并排序游戏时长
         play_time_dict = settings.get("play_time", {})
@@ -11316,7 +11393,7 @@ class SettingsWindow(QWidget):
             minutes = total_minutes % 60
             total_time_str = f"总游戏时长：{hours} 小时 {minutes} 分钟"
         total_label = QLabel(total_time_str)
-        total_label.setStyleSheet(f"color: #FFD700; font-size: {int(15 * self.parent().scale_factor)}px; font-weight: bold; border: none; ")
+        total_label.setStyleSheet(f"color: #FFD700; font-size: {int(15 * scale)}px; font-weight: bold; border: none; ")
         layout.addWidget(total_label)
         if not sorted_games:
             label = QLabel("暂无游戏时长数据")
@@ -11327,7 +11404,7 @@ class SettingsWindow(QWidget):
             for idx, (game, play_time) in enumerate(sorted_games):
                 # 游戏名
                 name_label = QLabel(game)
-                name_label.setStyleSheet(f"color: white; font-size: {int(18 * self.parent().scale_factor)}px; font-weight: bold; border: none;")
+                name_label.setStyleSheet(f"color: white; font-size: {int(18 * scale)}px; font-weight: bold; border: none;")
                 layout.addWidget(name_label)
                 
                 # 时长文本
@@ -11338,7 +11415,7 @@ class SettingsWindow(QWidget):
                     minutes = play_time % 60
                     play_time_str = f"游玩时间：{hours} 小时 {minutes} 分钟"
                 time_label = QLabel(play_time_str)
-                time_label.setStyleSheet(f"color: white; font-size: {int(16 * self.parent().scale_factor)}px; border: none;")
+                time_label.setStyleSheet(f"color: white; font-size: {int(16 * scale)}px; border: none;")
                 layout.addWidget(time_label)
 
                 # 进度条
@@ -11358,16 +11435,16 @@ class SettingsWindow(QWidget):
                     bar_color = "#9DC464"
                 progress_bar.setStyleSheet(f"""
                     QProgressBar {{
-                        border: {int(1 * self.parent().scale_factor)}px solid #444444;
-                        border-radius: {int(5 * self.parent().scale_factor)}px;
+                        border: {int(1 * scale)}px solid #444444;
+                        border-radius: {int(5 * scale)}px;
                         background: #2e2e2e;
-                        height: {int(4 * self.parent().scale_factor)}px;
-                        min-height: {int(4 * self.parent().scale_factor)}px;
-                        max-height: {int(4 * self.parent().scale_factor)}px;
+                        height: {int(4 * scale)}px;
+                        min-height: {int(4 * scale)}px;
+                        max-height: {int(4 * scale)}px;
                     }}
                     QProgressBar::chunk {{
                         background-color: {bar_color};
-                        width: {int(20 * self.parent().scale_factor)}px;
+                        width: {int(20 * scale)}px;
                     }}
                 """)
                 layout.addWidget(progress_bar)
@@ -11380,16 +11457,189 @@ class SettingsWindow(QWidget):
                     line.setStyleSheet("background-color: #444; border: none; min-height: 2px; max-height: 2px;")
                     layout.addWidget(line)
 
-        self.add_item_window.setLayout(layout)
-        # 居中显示
-        parent_geom = self.parent().geometry()
-        win_geom = self.add_item_window.frameGeometry()
-        #x = parent_geom.x() + (parent_geom.width() - win_geom.width()) // 2
-        #y = parent_geom.y() + (parent_geom.height() - win_geom.height()) // 2
-        x = 350 * self.parent().scale_factor
-        y = 100 * self.parent().scale_factor
-        self.add_item_window.move(x, y)
-        self.add_item_window.show()
+        # 添加操作按钮
+        button_layout = QHBoxLayout()
+        
+        # 刷新数据按钮
+        self.refresh_play_time_button = QPushButton("刷新数据")
+        self.refresh_play_time_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #00bfff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(28 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #1e3a5f;
+            }}
+        """)
+        self.refresh_play_time_button.clicked.connect(self.refresh_play_time)
+        button_layout.addWidget(self.refresh_play_time_button)
+        
+        # 清除数据按钮
+        self.clear_play_time_button = QPushButton("清除所有数据")
+        self.clear_play_time_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #ff4b4b;
+                color: white;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(28 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #ff6666;
+            }}
+        """)
+        self.clear_play_time_button.clicked.connect(self.clear_play_time)
+        button_layout.addWidget(self.clear_play_time_button)
+        
+        layout.addLayout(button_layout)
+        layout.addStretch()
+
+        # 定义可聚焦控件列表
+        self.focusable_widgets_play_time = [
+            self.refresh_play_time_button,
+            self.clear_play_time_button
+        ]
+
+        return page
+
+    def _create_about_page(self, scale: float) -> QWidget:
+        """关于页"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(int(18 * scale))
+        layout.setContentsMargins(
+            int(30 * scale),
+            int(30 * scale),
+            int(30 * scale),
+            int(30 * scale)
+        )
+    
+        # 顶部图标和标题
+        icon_title_layout = QHBoxLayout()
+        icon_label = QLabel()
+        icon_pix = QPixmap("./_internal/fav.ico").scaled(int(36 * scale), int(36 * scale), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        icon_label.setPixmap(icon_pix)
+        icon_label.setFixedSize(int(36 * scale), int(36 * scale))
+        icon_title_layout.addWidget(icon_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+        title_label = QLabel("DeskGamix")
+        title_label.setStyleSheet(f"color: white; font-size: {int(26 * scale)}px; font-weight: bold;")
+        icon_title_layout.addWidget(title_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+        icon_title_layout.addStretch()
+        layout.addLayout(icon_title_layout)
+    
+        # 软件简介
+        intro = QLabel("桌面游戏启动器\n"
+                       "支持手柄一键启动、收藏、截图等功能，"
+                       "支持自定义快捷方式、进程管理、游戏冻结等多种实用功能。\n"
+                       "专为Windows手柄操作优化。\n长按start+back打开鼠标映射。"
+                       "在手柄鼠标映射启用时点击系统托盘图标可停止映射\n\n"
+                       "手柄鼠标映射键位操作示意图：")
+        intro.setStyleSheet(f"color: white; font-size: {int(18 * scale)}px;")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+    
+        # 手柄映射示意图
+        #'<a href="https://wwse.lanzn.com/b00uz4bjmd" style="color:#93ffff;">蓝奏（密码:85jl）</a>　|　'
+        title_label = QLabel(
+            '<a href="https://github.com/gmaox/DeskGamix" style="color:#93ffff;">GitHub</a>　|　'
+            '<a href="https://space.bilibili.com/258889407" style="color:#93ffff;">B站主页</a>'
+        )
+        title_label.setStyleSheet(f"color: white; font-size: {int(26 * scale)}px; ")
+        title_label.setOpenExternalLinks(True)
+        icon_title_layout.addWidget(title_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+        img_label = QLabel()
+        try:
+            pixmap = QPixmap("./_internal/1.png").scaled(
+                int(1150 * scale),
+                int(660 * scale),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            img_label.setPixmap(pixmap)
+        except Exception:
+            img_label.setText("未找到1.png")
+        img_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(img_label)
+    
+        # 添加操作按钮
+        button_layout = QHBoxLayout()
+        
+        # 打开GitHub按钮
+        self.open_github_button = QPushButton("打开GitHub")
+        self.open_github_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #00bfff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(28 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #1e3a5f;
+            }}
+        """)
+        self.open_github_button.clicked.connect(self.open_github)
+        button_layout.addWidget(self.open_github_button)
+        
+        # 打开B站按钮
+        self.open_bilibili_button = QPushButton("打开B站主页")
+        self.open_bilibili_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #00bfff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(28 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #1e3a5f;
+            }}
+        """)
+        self.open_bilibili_button.clicked.connect(self.open_bilibili)
+        button_layout.addWidget(self.open_bilibili_button)
+        
+        layout.addLayout(button_layout)
+        layout.addStretch()
+
+        # 定义可聚焦控件列表
+        self.focusable_widgets_about = [
+            self.open_github_button,
+            self.open_bilibili_button
+        ]
+
+        return page
+    def switch_category(self, key: str):
+        """切换左侧类别"""
+        for k, btn in self.category_buttons:
+            btn.setChecked(k == key)
+
+        if key == "console":
+            self.current_title.setText("主机")
+            self.pages.setCurrentIndex(0)
+        elif key == "play_time":
+            self.current_title.setText("游玩时长")
+            self.pages.setCurrentIndex(2)
+        elif key == "about":
+            self.current_title.setText("关于")
+            self.pages.setCurrentIndex(3)
+        else:
+            # 其它类别暂时复用同一个占位页
+            btn = next((b for k2, b in self.category_buttons if k2 == key), None)
+            self.current_title.setText(btn.text() if btn else "设置")
+            self.pages.setCurrentIndex(1)
+
+        # 设置可聚焦控件
+        self.focusable_widgets = getattr(self, f'focusable_widgets_{key}', [])
+        self.focused_index = 0
+        if self.focusable_widgets:
+            self.focusable_widgets[0].setFocus()
 
     #def show_del_custom_valid_apps_dialog(self):
     #    """显示删除自定义valid_apps条目的窗口"""
@@ -11955,7 +12205,7 @@ class SettingsWindow(QWidget):
         confirm_button = QPushButton("确认")
         confirm_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: #4CAF50;
+                background-color: #2E7D9B;
                 color: white;
                 text-align: center;
                 padding: {int(10 * self.parent().scale_factor)}px;
@@ -12158,6 +12408,203 @@ class SettingsWindow(QWidget):
             self.parent().winTaskbar.on_back_to_desktop()
         # 退出程序
         QTimer.singleShot(500, QApplication.quit)
+
+    def refresh_play_time(self):
+        """刷新游玩时长数据"""
+        # 重新加载游玩时长数据
+        self.play_time_page = self._create_play_time_page(self.parent().scale_factor)
+        self.pages.removeWidget(self.pages.widget(2))
+        self.pages.insertWidget(2, self.play_time_page)
+        self.pages.setCurrentIndex(2)
+
+    def clear_play_time(self):
+        """清除所有游玩时长数据"""
+        # 清除设置中的游玩时长数据
+        if "play_time" in settings:
+            del settings["play_time"]
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=4)
+        # 重新加载游玩时长页面
+        self.refresh_play_time()
+
+    def open_github(self):
+        """打开GitHub页面"""
+        import webbrowser
+        webbrowser.open("https://github.com/gmaox/DeskGamix")
+
+    def open_bilibili(self):
+        """打开B站主页"""
+        import webbrowser
+        webbrowser.open("https://space.bilibili.com/258889407")
+
+    def handle_gamepad_input(self, action):
+        """处理手柄输入"""
+        if action == 'B':
+            if self.is_control_selected:
+                # 退出选中状态
+                self.is_control_selected = False
+                self.update_focus_visual()
+            else:
+                # 关闭设置窗口
+                self.hide()
+        elif action == 'A':
+            if self.current_area == 'right' and self.focusable_widgets and 0 <= self.focused_index < len(self.focusable_widgets):
+                widget = self.focusable_widgets[self.focused_index]
+                if hasattr(widget, 'click'):
+                    widget.click()
+                else:
+                    # 选中控件，进入调整模式
+                    self.is_control_selected = True
+                    self.update_focus_visual()
+            elif self.current_area == 'left':
+                # 在左侧区域按 A 键确认当前类别
+                current_index = next((i for i, (k, btn) in enumerate(self.category_buttons) if btn.isChecked()), 0)
+                key, btn = self.category_buttons[current_index]
+                self.switch_category(key)
+                # 切换到右侧区域
+                self.current_area = 'right'
+                # 取消选中状态
+                self.is_control_selected = False
+        elif action == 'UP':
+            # 取消选中状态
+            self.is_control_selected = False
+            if self.current_area == 'left':
+                # 在左侧区域向上切换类别
+                current_index = next((i for i, (k, btn) in enumerate(self.category_buttons) if btn.isChecked()), 0)
+                new_index = (current_index - 1) % len(self.category_buttons)
+                key, btn = self.category_buttons[new_index]
+                self.switch_category(key)
+            elif self.current_area == 'right':
+                if self.focusable_widgets:
+                    # 在右侧区域向上切换控件
+                    self.focused_index = (self.focused_index - 1) % len(self.focusable_widgets)
+                    self.focusable_widgets[self.focused_index].setFocus()
+                    self.update_focus_visual()
+                else:
+                    # 右侧区域没有可聚焦控件，切换到左侧区域
+                    self.current_area = 'left'
+        elif action == 'DOWN':
+            # 取消选中状态
+            self.is_control_selected = False
+            if self.current_area == 'left':
+                # 在左侧区域向下切换类别
+                current_index = next((i for i, (k, btn) in enumerate(self.category_buttons) if btn.isChecked()), 0)
+                new_index = (current_index + 1) % len(self.category_buttons)
+                key, btn = self.category_buttons[new_index]
+                self.switch_category(key)
+            elif self.current_area == 'right':
+                if self.focusable_widgets:
+                    # 在右侧区域向下切换控件
+                    self.focused_index = (self.focused_index + 1) % len(self.focusable_widgets)
+                    self.focusable_widgets[self.focused_index].setFocus()
+                    self.update_focus_visual()
+                else:
+                    # 右侧区域没有可聚焦控件，切换到左侧区域
+                    self.current_area = 'left'
+        elif action == 'LEFT':
+            if self.is_control_selected and self.current_area == 'right' and self.focusable_widgets and 0 <= self.focused_index < len(self.focusable_widgets):
+                # 选中状态下，调整滑块值
+                widget = self.focusable_widgets[self.focused_index]
+                if isinstance(widget, QSlider):
+                    widget.setValue(widget.value() - 1)
+            else:
+                # 切换到左侧区域
+                self.current_area = 'left'
+                # 取消选中状态
+                self.is_control_selected = False
+        elif action == 'RIGHT':
+            if self.is_control_selected and self.current_area == 'right' and self.focusable_widgets and 0 <= self.focused_index < len(self.focusable_widgets):
+                # 选中状态下，调整滑块值
+                widget = self.focusable_widgets[self.focused_index]
+                if isinstance(widget, QSlider):
+                    widget.setValue(widget.value() + 1)
+            else:
+                # 切换到右侧区域
+                self.current_area = 'right'
+                # 取消选中状态
+                self.is_control_selected = False
+
+    def update_focus_visual(self):
+        """更新焦点的视觉反馈"""
+        # 移除所有控件的焦点样式
+        for widget in self.focusable_widgets:
+            if isinstance(widget, QPushButton):
+                # 移除所有边框样式
+                style = widget.styleSheet()
+                style = style.replace('border: 2px solid #00bfff;', 'border: none;')
+                style = style.replace('border: 2px solid #ff00ff;', 'border: none;')
+                widget.setStyleSheet(style)
+            elif isinstance(widget, QSlider):
+                # 恢复滑块的默认样式
+                widget.setStyleSheet("")
+        
+        # 为当前聚焦的控件添加焦点样式
+        if self.focusable_widgets and 0 <= self.focused_index < len(self.focusable_widgets):
+            widget = self.focusable_widgets[self.focused_index]
+            if isinstance(widget, QPushButton):
+                # 保存原始样式
+                original_style = widget.styleSheet()
+                # 根据是否选中状态设置不同的边框颜色
+                if self.is_control_selected:
+                    # 选中状态：紫色边框
+                    if 'border: 2px solid #ff00ff;' not in original_style:
+                        original_style = original_style.replace('border: none;', 'border: 2px solid #ff00ff;')
+                        widget.setStyleSheet(original_style)
+                else:
+                    # 普通聚焦状态：蓝色边框
+                    if 'border: 2px solid #00bfff;' not in original_style:
+                        original_style = original_style.replace('border: none;', 'border: 2px solid #00bfff;')
+                        widget.setStyleSheet(original_style)
+            elif isinstance(widget, QSlider):
+                # 为滑块添加焦点样式
+                if self.is_control_selected:
+                    # 选中状态：紫色手柄和轨道
+                    widget.setStyleSheet("""
+                        QSlider::groove:horizontal {
+                            height: 10px;
+                            border: 1px solid #ff00ff;
+                            background: qlineargradient(
+                                x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #ff99ff, stop:1 #ff00ff
+                            );
+                            border-radius: 5px;
+                        }
+                        QSlider::handle:horizontal {
+                            background: #ff00ff;
+                            border: 2px solid #ffffff;
+                            width: 14px;
+                            height: 14px;
+                            margin: -5px 0;
+                            border-radius: 7px;
+                        }
+                        QSlider::chunk:horizontal {
+                            background-color: #ff00ff;
+                        }
+                    """)
+                else:
+                    # 普通聚焦状态：蓝色手柄和轨道
+                    widget.setStyleSheet("""
+                        QSlider::groove:horizontal {
+                            height: 10px;
+                            border: 1px solid #00bfff;
+                            background: qlineargradient(
+                                x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #99ccff, stop:1 #00bfff
+                            );
+                            border-radius: 5px;
+                        }
+                        QSlider::handle:horizontal {
+                            background: #00bfff;
+                            border: 2px solid #ffffff;
+                            width: 14px;
+                            height: 14px;
+                            margin: -5px 0;
+                            border-radius: 7px;
+                        }
+                        QSlider::chunk:horizontal {
+                            background-color: #00bfff;
+                        }
+                    """)
 
 
 # 应用程序入口
