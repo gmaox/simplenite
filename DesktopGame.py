@@ -3225,9 +3225,14 @@ class LaunchOverlay(QWidget):
                 bg_y = int((parent_height - dark_pixmap.height()) / 2)
                 self.overlay_bg_image.setGeometry(bg_x, bg_y, dark_pixmap.width(), dark_pixmap.height())
                 
-                # 淡入显示背景 (这里会设置 GraphicsEffect，会覆盖之前的 blur_effect)
-                bg_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_bg_image)
-                self.overlay_bg_image.setGraphicsEffect(bg_opacity)
+                # 淡入显示背景
+                if not hasattr(self.overlay_bg_image, 'opacity_effect'):
+                    bg_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_bg_image)
+                    self.overlay_bg_image.setGraphicsEffect(bg_opacity)
+                    self.overlay_bg_image.opacity_effect = bg_opacity
+                else:
+                    bg_opacity = self.overlay_bg_image.opacity_effect
+                
                 bg_opacity.setOpacity(0.0)
                 self.overlay_bg_image.show()
                 
@@ -3288,8 +3293,13 @@ class LaunchOverlay(QWidget):
 
                 # 应用几何并淡入显示加载条
                 self.overlay_progress.setGeometry(prog_x, prog_y, prog_w, prog_h)
-                progress_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_progress)
-                self.overlay_progress.setGraphicsEffect(progress_opacity)
+                if not hasattr(self.overlay_progress, 'opacity_effect'):
+                    progress_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_progress)
+                    self.overlay_progress.setGraphicsEffect(progress_opacity)
+                    self.overlay_progress.opacity_effect = progress_opacity
+                else:
+                    progress_opacity = self.overlay_progress.opacity_effect
+                
                 progress_opacity.setOpacity(0.0)
                 self.overlay_progress.show()
 
@@ -3301,8 +3311,13 @@ class LaunchOverlay(QWidget):
                 self.launch_animations.append(progress_fade)
 
                 # 状态标签淡入（保持原位）
-                status_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_status)
-                self.overlay_status.setGraphicsEffect(status_opacity)
+                if not hasattr(self.overlay_status, 'opacity_effect'):
+                    status_opacity = QtWidgets.QGraphicsOpacityEffect(self.overlay_status)
+                    self.overlay_status.setGraphicsEffect(status_opacity)
+                    self.overlay_status.opacity_effect = status_opacity
+                else:
+                    status_opacity = self.overlay_status.opacity_effect
+                
                 status_opacity.setOpacity(0.0)
                 self.overlay_status.show()
 
@@ -3331,14 +3346,27 @@ class LaunchOverlay(QWidget):
         QTimer.singleShot(150, keep_on_top)
     
     def _stop_launch_animations(self):
-        """停止所有启动动画"""
+        """停止所有启动动画并回收资源"""
+        # 停止并删除所有动画
         for anim in self.launch_animations:
             try:
                 anim.stop()
+                anim.deleteLater()
             except Exception:
                 pass
         self.launch_animations.clear()
         
+        # 释放图片资源
+        try:
+            self.overlay_image.setPixmap(QPixmap())
+            self.overlay_bg_image.setPixmap(QPixmap())
+            # 同时也清除缓存的 opacity_effect (如果需要)
+            if hasattr(self.overlay_image, 'opacity_effect'):
+                self.overlay_image.setGraphicsEffect(None)
+                delattr(self.overlay_image, 'opacity_effect')
+        except Exception:
+            pass
+
         if self.status_timer:
             self.status_timer.stop()
             self.status_timer = None
@@ -3346,14 +3374,25 @@ class LaunchOverlay(QWidget):
         if self.focus_check_timer:
             self.focus_check_timer.stop()
             self.focus_check_timer = None
-        # 停止后台进程检查线程（如果存在）
+
+        # 停止并删除后台进程检查线程
         if getattr(self, '_process_check_thread', None):
             try:
+                # 先断开信号连接，防止回调继续执行
+                try:
+                    self._process_check_thread.status_signal.disconnect()
+                except Exception:
+                    pass
                 self._process_check_thread.stop()
                 self._process_check_thread.wait(500)
+                self._process_check_thread.deleteLater()
             except Exception:
                 pass
             self._process_check_thread = None
+        
+        # 显式调用垃圾回收 (可选，但对于处理大型图像数据有帮助)
+        import gc
+        gc.collect()
     
     def _start_status_update(self):
         """开始更新游戏进程状态"""
