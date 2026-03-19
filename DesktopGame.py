@@ -2324,10 +2324,11 @@ def get_dialog_qss(scale_factor):
             }}
         """
 class ConfirmDialog(QDialog):
-    def __init__(self, variable1, scale_factor=1.0):
-        super().__init__()
+    def __init__(self, variable1, scale_factor=1.0, parent=None):
+        super().__init__(parent)
         self.variable1 = variable1
         self.scale_factor = scale_factor
+        self.parent_window = parent
         self.setWindowTitle("游戏确认")
         # 添加 Qt.WindowStaysOnTopHint 确保对话框在 Overlay 之上
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -2389,12 +2390,13 @@ class ConfirmDialog(QDialog):
 
     def shutdown_confirm_action(self):
         """立即关机的二次确认"""
-        second_confirm = ConfirmDialog("确定立即关机吗？", scale_factor=self.scale_factor)
+        self.cancel_action()
+        second_confirm = ConfirmDialog("确定立即关机吗？", scale_factor=self.scale_factor, parent=self.parent_window)
         if second_confirm.exec_():
-            self.parent().shutdown_system() 
-            self.cancel_action()
+            if self.parent_window:
+                self.parent_window.shutdown_system() 
     def confirm_action(self): 
-        print("用户点击了确认按钮")
+        print("用户点击了确认按钮") 
         # 使用淡出动画后再 accept
         try:
             self.fade_out_and_accept()
@@ -4105,7 +4107,7 @@ class GameSelector(QWidget):
             restart_action = tray_menu.addAction("重启程序")
             restart_action.triggered.connect(self.restart_program)
             restore_action = tray_menu.addAction("导入新游戏")
-            restore_action.triggered.connect(self.refresh_games)
+            restore_action.triggered.connect(self.addandrefresh_games)
             exit_action = tray_menu.addAction("退出")
             exit_action.triggered.connect(self.exitdef)
             tray_menu.setStyleSheet("""
@@ -4950,7 +4952,7 @@ class GameSelector(QWidget):
                     pass
             elif mode == 'sleep':
                 try:
-                    self.confirm_dialog = ConfirmDialog("要进入睡眠吗", scale_factor=self.scale_factor)
+                    self.confirm_dialog = ConfirmDialog("要进入睡眠吗", scale_factor=self.scale_factor, parent=self)
                     if self.confirm_dialog.exec_():
                         self.sleep_system()
                 except Exception:
@@ -7053,10 +7055,10 @@ class GameSelector(QWidget):
                 btn.setText("🗺️")
                 btn.setIcon(QIcon())
             elif i == 5:
-                btn.setText("💤")
+                btn.setText("⚙️")
                 btn.setIcon(QIcon())
             elif i == 6:
-                btn.setText("🔌")
+                btn.setText("💤")
                 btn.setIcon(QIcon())
             
             # 重新连接到原始处理器
@@ -8487,8 +8489,8 @@ class GameSelector(QWidget):
         # 只传递可执行文件的路径，不传递其他参数
         subprocess.Popen([sys.executable])
 
-    def refresh_games(self, args=None):
-        """刷新游戏列表，处理 extra_paths 中的快捷方式（线程安全）"""
+    def addandrefresh_games(self, args=None):
+        """添加游戏，处理 extra_paths 中的快捷方式（线程安全）"""
         self.qsaa_thread = SunshineAppManagerThread(args=args)
         self.qsaa_thread.finished_signal.connect(self.deep_reload_games)
         self.qsaa_thread.start()
@@ -8732,7 +8734,7 @@ class GameSelector(QWidget):
             super().__init__()
             self.initUI()
         def initUI(self):
-            self.label = QLabel("↖(🎮️映射中)", self)
+            self.label = QLabel("↖(🎮️)", self)
             self.label.setStyleSheet("font-family: 'Microsoft YaHei'; font-size: 15px; color: white; border: 1px solid black; border-radius: 0px; background-color: rgba(0, 0, 0, 125);")
             self.label.adjustSize()
             screen_geometry = QApplication.primaryScreen().geometry()
@@ -9533,6 +9535,8 @@ class FloatingWindow(QWidget):
             return
         # 正常模式
         if action == 'UP':
+            if self.current_index == 0 and firstinput:
+                self.hide() # 在第一个按钮按上键关闭悬浮窗
             current_tab_buttons = self.tab_buttons.get(self.current_tab_index, [])
             if current_tab_buttons:
                 self.current_index = max(0, self.current_index - 1)
@@ -11197,7 +11201,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(self.restart_button)
 
         # 行：管理（刷新游戏）
-        self.refresh_button = QPushButton("管理游戏列表")
+        self.refresh_button = QPushButton("添加新游戏/管理游戏")
         self.refresh_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
@@ -11211,8 +11215,13 @@ class SettingsWindow(QWidget):
                 background-color: #1e3a5f;
             }}
         """)
-        self.refresh_button.clicked.connect(self.parent_window.refresh_games)
+        self.refresh_button.clicked.connect(self.addandrefresh)
         layout.addWidget(self.refresh_button)
+
+        # 说明文字
+        info_label = QLabel("该软件和Sunshine共享游戏库，若未安装Sunshine游戏库信息会保存在软件同级位置")
+        info_label.setStyleSheet(f"color: #aaaaaa; font-size: {int(18 * scale)}px;")
+        layout.addWidget(info_label)
 
         # 分割线
         line2 = QFrame()
@@ -11278,6 +11287,10 @@ class SettingsWindow(QWidget):
         self.open_folder_button.clicked.connect(self.is_startup_enabled)
         layout.addWidget(self.open_folder_button)
 
+        # 说明文字
+        info_label = QLabel("开机自启选择窗暂时无法使用手柄确认，需使用鼠标点击确认")
+        info_label.setStyleSheet(f"color: #aaaaaa; font-size: {int(18 * scale)}px;")
+        layout.addWidget(info_label)
         # 分割线
         line3 = QFrame()
         line3.setFrameShape(QFrame.HLine)
@@ -11457,53 +11470,9 @@ class SettingsWindow(QWidget):
                     line.setStyleSheet("background-color: #444; border: none; min-height: 2px; max-height: 2px;")
                     layout.addWidget(line)
 
-        # 添加操作按钮
-        button_layout = QHBoxLayout()
-        
-        # 刷新数据按钮
-        self.refresh_play_time_button = QPushButton("刷新数据")
-        self.refresh_play_time_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: #00bfff;
-                text-align: left;
-                padding: {int(16 * scale)}px 0;
-                border: none;
-                font-size: {int(28 * scale)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #1e3a5f;
-            }}
-        """)
-        self.refresh_play_time_button.clicked.connect(self.refresh_play_time)
-        button_layout.addWidget(self.refresh_play_time_button)
-        
-        # 清除数据按钮
-        self.clear_play_time_button = QPushButton("清除所有数据")
-        self.clear_play_time_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #ff4b4b;
-                color: white;
-                text-align: left;
-                padding: {int(16 * scale)}px 0;
-                border: none;
-                font-size: {int(28 * scale)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #ff6666;
-            }}
-        """)
-        self.clear_play_time_button.clicked.connect(self.clear_play_time)
-        button_layout.addWidget(self.clear_play_time_button)
-        
-        layout.addLayout(button_layout)
         layout.addStretch()
 
-        # 定义可聚焦控件列表
-        self.focusable_widgets_play_time = [
-            self.refresh_play_time_button,
-            self.clear_play_time_button
-        ]
+        self.focusable_widgets_play_time = []
 
         return page
 
@@ -11566,53 +11535,9 @@ class SettingsWindow(QWidget):
         img_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(img_label)
     
-        # 添加操作按钮
-        button_layout = QHBoxLayout()
-        
-        # 打开GitHub按钮
-        self.open_github_button = QPushButton("打开GitHub")
-        self.open_github_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: #00bfff;
-                text-align: left;
-                padding: {int(16 * scale)}px 0;
-                border: none;
-                font-size: {int(28 * scale)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #1e3a5f;
-            }}
-        """)
-        self.open_github_button.clicked.connect(self.open_github)
-        button_layout.addWidget(self.open_github_button)
-        
-        # 打开B站按钮
-        self.open_bilibili_button = QPushButton("打开B站主页")
-        self.open_bilibili_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: #00bfff;
-                text-align: left;
-                padding: {int(16 * scale)}px 0;
-                border: none;
-                font-size: {int(28 * scale)}px;
-            }}
-            QPushButton:hover {{
-                background-color: #1e3a5f;
-            }}
-        """)
-        self.open_bilibili_button.clicked.connect(self.open_bilibili)
-        button_layout.addWidget(self.open_bilibili_button)
-        
-        layout.addLayout(button_layout)
         layout.addStretch()
 
-        # 定义可聚焦控件列表
-        self.focusable_widgets_about = [
-            self.open_github_button,
-            self.open_bilibili_button
-        ]
+        self.focusable_widgets_about = []
 
         return page
     def switch_category(self, key: str):
@@ -11640,6 +11565,8 @@ class SettingsWindow(QWidget):
         self.focused_index = 0
         if self.focusable_widgets:
             self.focusable_widgets[0].setFocus()
+        # 更新焦点的视觉反馈
+        self.update_focus_visual()
 
     #def show_del_custom_valid_apps_dialog(self):
     #    """显示删除自定义valid_apps条目的窗口"""
@@ -12262,9 +12189,14 @@ class SettingsWindow(QWidget):
 
         # 显示对话框并获取结果
         hotkey_dialog.exec_()
-
+    def addandrefresh(self):
+        """添加并刷新主页游戏"""
+        self.hide()
+        self.parent_window.hide_window()
+        self.parent_window.addandrefresh_games()
     # 检查程序是否设置为开机自启
     def is_startup_enabled(self):
+        self.hide()
         command = ['schtasks', '/query', '/tn', "DesktopGameStartup"]
         try:
             # 如果任务存在，将返回0
@@ -12278,8 +12210,8 @@ class SettingsWindow(QWidget):
         tn = "DesktopGameStartup"
         if enable:
             # 弹窗询问是否开机唤出主页面
-            confirm_dialog = ConfirmDialog("开机启动时是否打开主页面？\n（选择“取消”使用后台静默启动）", scale_factor=self.parent().scale_factor)
-            result = confirm_dialog.exec_()
+            self.confirm_dialog = ConfirmDialog("开机启动时是否打开主页面？\n（选择“取消”使用后台静默启动）", scale_factor=self.parent_window.scale_factor)
+            result = self.confirm_dialog.exec_()
             if result == QDialog.Accepted:
                 args = ""  # 唤出主页面
             else:
@@ -12342,8 +12274,8 @@ class SettingsWindow(QWidget):
             try:
                 subprocess.run(['schtasks', '/delete', '/tn', tn, '/f'], check=True)
                 # 添加取消开机自启成功弹窗
-                confirm_dialog = ConfirmDialog("已取消开机自启", scale_factor=self.parent().scale_factor)
-                confirm_dialog.exec_()
+                self.confirm_dialog = ConfirmDialog("已取消开机自启", scale_factor=self.parent_window.scale_factor)
+                self.confirm_dialog.exec_()
             except subprocess.CalledProcessError:
                 pass
     def toggle_killexplorer(self):
@@ -12409,34 +12341,6 @@ class SettingsWindow(QWidget):
         # 退出程序
         QTimer.singleShot(500, QApplication.quit)
 
-    def refresh_play_time(self):
-        """刷新游玩时长数据"""
-        # 重新加载游玩时长数据
-        self.play_time_page = self._create_play_time_page(self.parent().scale_factor)
-        self.pages.removeWidget(self.pages.widget(2))
-        self.pages.insertWidget(2, self.play_time_page)
-        self.pages.setCurrentIndex(2)
-
-    def clear_play_time(self):
-        """清除所有游玩时长数据"""
-        # 清除设置中的游玩时长数据
-        if "play_time" in settings:
-            del settings["play_time"]
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=4)
-        # 重新加载游玩时长页面
-        self.refresh_play_time()
-
-    def open_github(self):
-        """打开GitHub页面"""
-        import webbrowser
-        webbrowser.open("https://github.com/gmaox/DeskGamix")
-
-    def open_bilibili(self):
-        """打开B站主页"""
-        import webbrowser
-        webbrowser.open("https://space.bilibili.com/258889407")
-
     def handle_gamepad_input(self, action):
         """处理手柄输入"""
         if action == 'B':
@@ -12463,6 +12367,9 @@ class SettingsWindow(QWidget):
                 self.switch_category(key)
                 # 切换到右侧区域
                 self.current_area = 'right'
+                # 清除左侧类别按钮的焦点
+                for _, b in self.category_buttons:
+                    b.clearFocus()
                 # 取消选中状态
                 self.is_control_selected = False
         elif action == 'UP':
@@ -12512,6 +12419,12 @@ class SettingsWindow(QWidget):
                 self.current_area = 'left'
                 # 取消选中状态
                 self.is_control_selected = False
+                # 清除右侧区域的焦点
+                if self.focusable_widgets and self.focused_index < len(self.focusable_widgets):
+                    widget = self.focusable_widgets[self.focused_index]
+                    widget.clearFocus()
+                # 更新焦点的视觉反馈
+                self.update_focus_visual()
         elif action == 'RIGHT':
             if self.is_control_selected and self.current_area == 'right' and self.focusable_widgets and 0 <= self.focused_index < len(self.focusable_widgets):
                 # 选中状态下，调整滑块值
@@ -12521,11 +12434,33 @@ class SettingsWindow(QWidget):
             else:
                 # 切换到右侧区域
                 self.current_area = 'right'
+                # 清除左侧类别按钮的焦点
+                for _, b in self.category_buttons:
+                    b.clearFocus()
                 # 取消选中状态
                 self.is_control_selected = False
+                # 设置焦点到第一个可聚焦控件
+                if self.focusable_widgets:
+                    self.focused_index = 0
+                    self.focusable_widgets[0].setFocus()
+                # 更新焦点的视觉反馈
+                self.update_focus_visual()
 
     def update_focus_visual(self):
         """更新焦点的视觉反馈"""
+        # 只有在右侧区域时才显示右侧控件的聚焦样式。
+        # 切换到左侧区域（当前区域为 'left'）时应清除右侧控件的任何聚焦样式。
+        if self.current_area != 'right':
+            for widget in self.focusable_widgets:
+                if isinstance(widget, QPushButton):
+                    style = widget.styleSheet()
+                    style = style.replace('border: 2px solid #00bfff;', 'border: none;')
+                    style = style.replace('border: 2px solid #ff00ff;', 'border: none;')
+                    widget.setStyleSheet(style)
+                elif isinstance(widget, QSlider):
+                    widget.setStyleSheet("")
+            return
+
         # 移除所有控件的焦点样式
         for widget in self.focusable_widgets:
             if isinstance(widget, QPushButton):
