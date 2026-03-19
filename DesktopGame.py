@@ -2261,6 +2261,10 @@ class Overlay(QWidget):
         self.show()
         # 确保覆盖层在对话框之下
         self.lower()
+        if self._fade_anim:
+            self._fade_anim.stop()
+            self._fade_anim.deleteLater()
+            
         anim = QPropertyAnimation(self, b"windowOpacity")
         anim.setDuration(duration)
         anim.setStartValue(0.0)
@@ -2274,13 +2278,20 @@ class Overlay(QWidget):
         if self._is_fading:
             return
         self._is_fading = True
+        if self._fade_anim:
+            self._fade_anim.stop()
+            self._fade_anim.deleteLater()
+            
         anim = QPropertyAnimation(self, b"windowOpacity")
         anim.setDuration(duration)
-        anim.setStartValue(0.2)  # 半透明
+        anim.setStartValue(self.windowOpacity())  # 使用当前透明度
         anim.setEndValue(0.0)
         def on_finished():
             self.hide()
             self._is_fading = False
+            if self._fade_anim:
+                self._fade_anim.deleteLater()
+                self._fade_anim = None
         anim.finished.connect(on_finished)
         self._fade_anim = anim
         anim.start()
@@ -2433,6 +2444,10 @@ class ConfirmDialog(QDialog):
             self.show()
             self.raise_()
             
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+            
             # 再淡入对话框
             anim = QPropertyAnimation(self, b"windowOpacity")
             anim.setDuration(duration)
@@ -2449,6 +2464,11 @@ class ConfirmDialog(QDialog):
             if self._is_fading:
                 return
             self._is_fading = True
+            
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+            
             anim = QPropertyAnimation(self, b"windowOpacity")
             anim.setDuration(duration)
             anim.setStartValue(self.windowOpacity())
@@ -2473,6 +2493,11 @@ class ConfirmDialog(QDialog):
             if self._is_fading:
                 return
             self._is_fading = True
+            
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+            
             anim = QPropertyAnimation(self, b"windowOpacity")
             anim.setDuration(duration)
             anim.setStartValue(self.windowOpacity())
@@ -2489,7 +2514,10 @@ class ConfirmDialog(QDialog):
             self._fade_anim = anim
             anim.start()
         except Exception:
-            self.overlay.fade_out(duration)
+            try:
+                self.overlay.fade_out(duration)
+            except Exception:
+                pass
             super(ConfirmDialog, self).reject()
 
     def keyPressEvent(self, event):
@@ -2580,6 +2608,7 @@ class LoadingDialog(QDialog):
     """通用加载窗口，显示一条提示信息并保持在最上层。"""
     def __init__(self, message="加载中...", scale_factor=1.0, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.message = message
         self.scale_factor = scale_factor
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
@@ -2597,6 +2626,24 @@ class LoadingDialog(QDialog):
         self.overlay = Overlay(self)
         
         self.init_ui()
+
+    def closeEvent(self, event):
+        """窗口关闭时的清理"""
+        try:
+            # 停止并删除动画
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+                self._fade_anim = None
+            
+            # 确保光标恢复
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def init_ui(self):
         # 使样式与 ConfirmDialog 对齐
@@ -2647,6 +2694,10 @@ class LoadingDialog(QDialog):
             self.show()
             self.raise_()
             
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+            
             # 再淡入对话框
             anim = QPropertyAnimation(self, b"windowOpacity")
             anim.setDuration(duration)
@@ -2664,6 +2715,7 @@ class LoadingDialog(QDialog):
             try:
                 if self._fade_anim is not None:
                     self._fade_anim.stop()
+                    self._fade_anim.deleteLater()
             except Exception:
                 pass
             self._is_fading = True
@@ -2873,6 +2925,10 @@ class LaunchOverlay(QWidget):
         self.launch_animations = []
         self.status_timer = None
         self.focus_check_timer = None
+        self._phase_timer = QTimer(self)
+        self._phase_timer.setSingleShot(True)
+        self._on_top_timer = QTimer(self)
+        self._on_top_timer.setSingleShot(True)
         self._process_check_thread = None
         self.current_game_name = None
         self.current_game_path = None
@@ -2880,10 +2936,17 @@ class LaunchOverlay(QWidget):
         # 初始时隐藏
         self.hide()
     
+    def hideEvent(self, event):
+        """窗口隐藏时自动停止动画并释放资源，并销毁自身以节省内存"""
+        self._stop_launch_animations()
+        if hasattr(self.parent, 'launch_overlay') and self.parent.launch_overlay == self:
+            self.parent.launch_overlay = None
+        self.deleteLater()
+        super().hideEvent(event)
+
     def mousePressEvent(self, event):
         """点击悬浮窗时隐藏"""
         self.hide()
-        self._stop_launch_animations()
     
     def show_launch_window(self, game_name, image_path):
         """显示启动游戏的悬浮窗"""
@@ -3021,6 +3084,8 @@ class LaunchOverlay(QWidget):
         self._start_focus_monitoring()
         
         def on_fade_in_finished():
+            if not self.isVisible():
+                return
             # 第二阶段：封面从光标位置移动到中央，同时添加缩放和变暗效果
             if self.overlay_image.isVisible():
                 # 位置动画
@@ -3091,6 +3156,8 @@ class LaunchOverlay(QWidget):
                 dim_anim.start()
                 
                 def on_move_finished():
+                    if not self.isVisible():
+                        return
                     # 第三阶段：文字淡入，同时从下方滑入
                     self.overlay_text.show()
                     
@@ -3129,8 +3196,12 @@ class LaunchOverlay(QWidget):
                     self.launch_animations.append(text_pos_anim)
                     
                     def on_text_fade_in_finished():
+                        if not self.isVisible():
+                            return
                         # 停留1秒后进入第四阶段
-                        QTimer.singleShot(800, start_phase4)
+                        self._phase_timer.timeout.disconnect() if self._phase_timer.receivers(self._phase_timer.timeout) > 0 else None
+                        self._phase_timer.timeout.connect(start_phase4)
+                        self._phase_timer.start(800)
                     
                     text_fade_in.finished.connect(on_text_fade_in_finished)
                     text_fade_in.start()
@@ -3150,7 +3221,11 @@ class LaunchOverlay(QWidget):
                 self.launch_animations.append(text_fade_in)
                 
                 def on_text_fade_in_finished():
-                    QTimer.singleShot(1000, start_phase4)
+                    if not self.isVisible():
+                        return
+                    self._phase_timer.timeout.disconnect() if self._phase_timer.receivers(self._phase_timer.timeout) > 0 else None
+                    self._phase_timer.timeout.connect(start_phase4)
+                    self._phase_timer.start(1000)
                 
                 text_fade_in.finished.connect(on_text_fade_in_finished)
                 text_fade_in.start()
@@ -3160,6 +3235,8 @@ class LaunchOverlay(QWidget):
         
         def start_phase4():
             """第四阶段：图片变暗放大做背景，文字移动到左上角，显示加载条和状态"""
+            if not self.isVisible():
+                return
             # 隐藏原封面图片（淡出效果）
             if self.overlay_image.isVisible():
                 if hasattr(self.overlay_image, 'opacity_effect'):
@@ -3190,6 +3267,12 @@ class LaunchOverlay(QWidget):
                     data = pil_img.tobytes("raw", "RGBA")
                     qimg = QtGui.QImage(data, pil_img.width, pil_img.height, QtGui.QImage.Format_RGBA8888)
                     bg_scaled = QPixmap.fromImage(qimg)
+                    
+                    # 显式清理不再需要的 PIL 对象和数据，减少内存占用
+                    del data
+                    del qimg
+                    pil_img.close()
+                    del pil_img
                 except Exception as e:
                     print(f"PIL Blur error: {e}")
                     bg_pixmap = QPixmap(image_path)
@@ -3279,6 +3362,8 @@ class LaunchOverlay(QWidget):
             self.overlay_text.setFont(QFont(self.overlay_text.font().family(), font_size))
             
             def on_text_move_finished():
+                if not self.isVisible():
+                    return
                 # 显示加载条和状态（带淡入动画）
                 # 将加载条放在状态标签底部（相对定位并做边界检测）
                 status_geom = self.overlay_status.geometry()
@@ -3337,13 +3422,17 @@ class LaunchOverlay(QWidget):
         # 保持窗口在最上层
         self.selection_count = 0
         def keep_on_top():
-            if self.isVisible():
-                self.raise_()
-                self.selection_count += 1
-                if self.selection_count < 200:  # 持续约30秒
-                    QTimer.singleShot(150, keep_on_top)
+            if not self.isVisible():
+                return
+            self.raise_()
+            self.selection_count += 1
+            if self.selection_count < 200:  # 持续约30秒
+                self._on_top_timer.timeout.disconnect() if self._on_top_timer.receivers(self._on_top_timer.timeout) > 0 else None
+                self._on_top_timer.timeout.connect(keep_on_top)
+                self._on_top_timer.start(150)
         
-        QTimer.singleShot(150, keep_on_top)
+        # 初始调用
+        keep_on_top()
     
     def _stop_launch_animations(self):
         """停止所有启动动画并回收资源"""
@@ -3360,10 +3449,14 @@ class LaunchOverlay(QWidget):
         try:
             self.overlay_image.setPixmap(QPixmap())
             self.overlay_bg_image.setPixmap(QPixmap())
-            # 同时也清除缓存的 opacity_effect (如果需要)
-            if hasattr(self.overlay_image, 'opacity_effect'):
-                self.overlay_image.setGraphicsEffect(None)
-                delattr(self.overlay_image, 'opacity_effect')
+            
+            # 清除所有缓存的特效，因为特效内部可能引用了大型 pixmap
+            for widget in [self.overlay_image, self.overlay_bg_image, self.overlay_progress, self.overlay_status, self.overlay_text]:
+                if hasattr(widget, 'opacity_effect'):
+                    widget.setGraphicsEffect(None)
+                    delattr(widget, 'opacity_effect')
+                else:
+                    widget.setGraphicsEffect(None)
         except Exception:
             pass
 
@@ -3374,17 +3467,24 @@ class LaunchOverlay(QWidget):
         if self.focus_check_timer:
             self.focus_check_timer.stop()
             self.focus_check_timer = None
+        
+        if hasattr(self, '_phase_timer'):
+            self._phase_timer.stop()
+        if hasattr(self, '_on_top_timer'):
+            self._on_top_timer.stop()
 
         # 停止并删除后台进程检查线程
         if getattr(self, '_process_check_thread', None):
             try:
-                # 先断开信号连接，防止回调继续执行
+                # 先断开所有信号连接
                 try:
                     self._process_check_thread.status_signal.disconnect()
                 except Exception:
                     pass
                 self._process_check_thread.stop()
                 self._process_check_thread.wait(500)
+                # 显式从父对象中移除
+                self._process_check_thread.setParent(None)
                 self._process_check_thread.deleteLater()
             except Exception:
                 pass
@@ -3804,8 +3904,8 @@ class GameSelector(QWidget):
             pass
         self.monitor_thread.start() 
         
-        # 创建启动游戏的悬浮窗
-        self.launch_overlay = LaunchOverlay(self)
+        # 初始化启动游戏的悬浮窗（延迟创建，关闭后销毁）
+        self.launch_overlay = None
         
         # 启动手柄输入监听线程
         self.controller_thread = GameControllerThread(self)
@@ -7258,6 +7358,8 @@ class GameSelector(QWidget):
                 return
             else:
                 pass
+        if not self.launch_overlay:
+            self.launch_overlay = LaunchOverlay(self)
         self.launch_overlay.show_launch_window(game_name, image_path)
         self.switch_to_main_interface()
         self.current_index = 0  # 从第一个按钮开始
