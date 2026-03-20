@@ -1862,6 +1862,7 @@ class ScreenshotWindow(QDialog):
         self.preview_index = index
     
         self.is_fullscreen_preview = QtWidgets.QDialog(self, flags=Qt.Dialog)
+        self.is_fullscreen_preview.setAttribute(Qt.WA_DeleteOnClose)
         self.is_fullscreen_preview.setWindowFlag(Qt.FramelessWindowHint)
         # 初始窗口透明度为0，随后播放淡入动画
         try:
@@ -1922,12 +1923,10 @@ class ScreenshotWindow(QDialog):
                 fade_out_win.setEndValue(0.0)
                 def _on_fade_finished():
                     try:
-                        QtWidgets.QDialog.close(dlg)
+                        dlg.close()
+                        dlg.deleteLater()
                     except Exception:
-                        try:
-                            dlg.close()
-                        except Exception:
-                            pass
+                        pass
                     # 清除引用
                     if hasattr(self, 'is_fullscreen_preview'):
                         self.is_fullscreen_preview = None
@@ -2242,6 +2241,9 @@ class Overlay(QWidget):
     """全屏灰色覆盖层类"""
     def __init__(self, parent=None):
         super().__init__()
+        # 记录关联的对话框，但不作为 Qt 的 parent 以避免行为异常
+        self.associated_dialog = parent
+        self.setAttribute(Qt.WA_DeleteOnClose)
         # 作为独立的顶级窗口，不设置parent
         # 可使用 Qt.WindowTransparentForInput 让事件穿过覆盖层
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint | Qt.NoDropShadowWindowHint)
@@ -2287,11 +2289,11 @@ class Overlay(QWidget):
         anim.setStartValue(self.windowOpacity())  # 使用当前透明度
         anim.setEndValue(0.0)
         def on_finished():
-            self.hide()
             self._is_fading = False
             if self._fade_anim:
                 self._fade_anim.deleteLater()
                 self._fade_anim = None
+            self.close() # 使用 close() 触发 WA_DeleteOnClose
         anim.finished.connect(on_finished)
         self._fade_anim = anim
         anim.start()
@@ -2337,6 +2339,7 @@ def get_dialog_qss(scale_factor):
 class ConfirmDialog(QDialog):
     def __init__(self, variable1, scale_factor=1.0, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.variable1 = variable1
         self.scale_factor = scale_factor
         self.parent_window = parent
@@ -2353,7 +2356,7 @@ class ConfirmDialog(QDialog):
         self._fade_anim = None
         self._is_fading = False
         
-        # 创建覆盖层
+        # 创建覆盖层 - 不传 parent 给 super().__init__ 以免行为异常，但保留引用
         self.overlay = Overlay(self)
         
         self.init_ui()
@@ -2430,6 +2433,27 @@ class ConfirmDialog(QDialog):
         except Exception:
             pass
         self.ignore_input_until = pygame.time.get_ticks() + 350  # 打开窗口后1秒内忽略输入
+
+    def closeEvent(self, event):
+        """确保对话框关闭时，关联的覆盖层也被销毁"""
+        try:
+            # 停止并删除对话框动画
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+                self._fade_anim = None
+            
+            # 显式关闭覆盖层以释放全屏窗口内存 (20MB+)
+            if hasattr(self, 'overlay') and self.overlay:
+                # 如果覆盖层还在淡入淡出，强制其关闭
+                try:
+                    self.overlay.close()
+                    self.overlay = None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def fade_in(self, duration=180):
         try:
@@ -2622,28 +2646,10 @@ class LoadingDialog(QDialog):
         self._fade_anim = None
         self._is_fading = False
         
-        # 创建覆盖层
+        # 创建覆盖层 - 不传 parent 给 super().__init__ 以免行为异常，但保留引用
         self.overlay = Overlay(self)
         
         self.init_ui()
-
-    def closeEvent(self, event):
-        """窗口关闭时的清理"""
-        try:
-            # 停止并删除动画
-            if self._fade_anim:
-                self._fade_anim.stop()
-                self._fade_anim.deleteLater()
-                self._fade_anim = None
-            
-            # 确保光标恢复
-            try:
-                QApplication.restoreOverrideCursor()
-            except Exception:
-                pass
-        except Exception:
-            pass
-        super().closeEvent(event)
 
     def init_ui(self):
         # 使样式与 ConfirmDialog 对齐
@@ -2763,8 +2769,27 @@ class LoadingDialog(QDialog):
             super(LoadingDialog, self).close()
 
     def closeEvent(self, event):
+        """确保对话框关闭时，清理动画并销毁关联的覆盖层"""
         try:
-            QApplication.restoreOverrideCursor()
+            # 停止并删除对话框动画
+            if self._fade_anim:
+                self._fade_anim.stop()
+                self._fade_anim.deleteLater()
+                self._fade_anim = None
+            
+            # 确保光标恢复
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+            
+            # 显式关闭覆盖层以释放全屏窗口内存 (20MB+)
+            if hasattr(self, 'overlay') and self.overlay:
+                try:
+                    self.overlay.close()
+                    self.overlay = None
+                except Exception:
+                    pass
         except Exception:
             pass
         super().closeEvent(event)
@@ -3614,7 +3639,7 @@ class GameSelector(QWidget):
         self.current_section = 0  # 0=游戏选择区域，1=控制按钮区域
         GSHWND = int(self.winId())
         self.setWindowIcon(QIcon('./_internal/fav.ico'))
-        self.setWindowOpacity(0.0)  # 初始设为透明，用于启动动画
+        self.setWindowOpacity(0.0)  # 透明度为0
         self.more_section = 0  # 0=主页面，1=更多页面
         self.setWindowTitle("游戏选择器")
         QApplication.setFont(QFont("Microsoft YaHei"))  # 设置字体为微软雅黑
@@ -3834,7 +3859,7 @@ class GameSelector(QWidget):
 
         else:
             # 添加一个提示按钮
-            no_games_button = QPushButton("没有发现游戏\n点击设置-管理-按钮 了解该软件游戏库工作原理")
+            no_games_button = QPushButton("∑(°口°๑) ‌‌库中无游戏(っ°Д°;)っ\n点击此处开启库管理工具进行添加")
             no_games_button.setFixedSize(int(700 * self.scale_factor), int(200 * self.scale_factor))
             no_games_button.setStyleSheet(f"""
                 QPushButton {{
@@ -3845,6 +3870,7 @@ class GameSelector(QWidget):
                     font-size: {int(30 * self.scale_factor)}px;
                 }}
             """)
+            no_games_button.clicked.connect(self.addgamebutton)  # 绑定"更多"按钮的功能
             self.grid_layout.addWidget(no_games_button, 0, 0)
             self.buttons.append(no_games_button)
 
@@ -4267,13 +4293,13 @@ class GameSelector(QWidget):
         self.tray_icon.setContextMenu(self._tray_menu)
 
         def tray_icon_activated(reason):
-            if self.is_mouse_simulation_running:
-                self.is_mouse_simulation_running = False
-                return
             if reason == QSystemTrayIcon.Context:  # 右键
                 self._tray_menu = build_tray_menu()
                 self.tray_icon.setContextMenu(self._tray_menu)
             elif reason == QSystemTrayIcon.Trigger:  # 左键
+                if self.is_mouse_simulation_running:
+                    self.is_mouse_simulation_running = False
+                    return
                 self.show_window()
                 if self.killexplorer == True:
                     self.wintaskbarshow()
@@ -4325,7 +4351,7 @@ class GameSelector(QWidget):
         # 启动时的淡入动画（如果不是静默启动）
         if not STARTUP:
             self._startup_anim = QPropertyAnimation(self, b"windowOpacity", self)
-            self._startup_anim.setStartValue(0.0)
+            self._startup_anim.setStartValue(0.0) # 透明度为0
             self._startup_anim.setEndValue(1.0)
             self._startup_anim.setDuration(400) # 启动动画
             try:
@@ -4655,6 +4681,7 @@ class GameSelector(QWidget):
             def _on_finished():
                 try:
                     self._scroll_animations.remove(anim)
+                    anim.deleteLater()
                 except Exception:
                     pass
             anim.finished.connect(_on_finished)
@@ -4747,6 +4774,7 @@ class GameSelector(QWidget):
                     try:
                         if fade_in in self._scroll_area_fade_anims:
                             self._scroll_area_fade_anims.remove(fade_in)
+                            fade_in.deleteLater()
                     except Exception:
                         pass
 
@@ -4754,6 +4782,7 @@ class GameSelector(QWidget):
                 try:
                     if fade_out in self._scroll_area_fade_anims:
                         self._scroll_area_fade_anims.remove(fade_out)
+                        fade_out.deleteLater()
                 except Exception:
                     pass
 
@@ -4899,13 +4928,13 @@ class GameSelector(QWidget):
     def show_window(self):
         """显示窗口"""
         # 先设置透明度为0，避免闪烁
-        self.setWindowOpacity(0.0)
+        self.setWindowOpacity(0.0) # 透明度为0
         ctypes.windll.user32.ShowWindow(GSHWND, 9) # 9=SW_RESTORE            
         ctypes.windll.user32.SetForegroundWindow(GSHWND)
         
         # 创建淡入动画
         self._show_anim = QPropertyAnimation(self, b"windowOpacity", self)
-        self._show_anim.setStartValue(0.0)
+        self._show_anim.setStartValue(0.0) # 透明度为0
         self._show_anim.setEndValue(1.0)
         self._show_anim.setDuration(200) # 200ms
         try:
@@ -4983,7 +5012,7 @@ class GameSelector(QWidget):
         # 创建淡出动画
         self._hide_anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._hide_anim.setStartValue(self.windowOpacity())
-        self._hide_anim.setEndValue(0.0)
+        self._hide_anim.setEndValue(0.0) # 透明度为0
         self._hide_anim.setDuration(200) # 200ms
         try:
             from PyQt5.QtCore import QEasingCurve
@@ -6320,9 +6349,10 @@ class GameSelector(QWidget):
                             except Exception:
                                 pass
                         fade_out.finished.connect(_del_old)
-                        # 保存引用
+                        # 保存引用并清理旧动画
                         if not hasattr(self, '_label_fade_anims'):
                             self._label_fade_anims = []
+                        self._cleanup_label_animations()
                         self._label_fade_anims.append(fade_out)
                         fade_out.start()
                     else:
@@ -6355,6 +6385,7 @@ class GameSelector(QWidget):
                 fade_in_lbl.setEndValue(1.0)
                 if not hasattr(self, '_label_fade_anims'):
                     self._label_fade_anims = []
+                self._cleanup_label_animations()
                 self._label_fade_anims.append(fade_in_lbl)
                 fade_in_lbl.start()
             except Exception:
@@ -6454,6 +6485,12 @@ class GameSelector(QWidget):
         self.current_index = new_index
         self.update_highlight()
     
+    def _cleanup_label_animations(self):
+        """清理已完成的标签淡入淡出动画，释放内存"""
+        if hasattr(self, '_label_fade_anims'):
+            # 过滤掉已停止或已完成的动画
+            self._label_fade_anims = [anim for anim in self._label_fade_anims if anim.state() == QPropertyAnimation.Running]
+
     # ===== 控制按钮标签显示方法 =====
     def _capture_window_thumbnail(self, hwnd, width=160, height=120):
         """捕获窗口的缩略图（使用 PrintWindow + Pillow，返回 QPixmap）"""
@@ -6498,6 +6535,17 @@ class GameSelector(QWidget):
 
         pixmap = QPixmap.fromImage(qimg)
         pixmap = pixmap.scaledToWidth(width, Qt.SmoothTransformation)
+        
+        # 显式清理资源
+        try:
+            pil_img.close()
+            del pil_img
+            del data
+            del qimg
+            del bmpstr
+        except Exception:
+            pass
+            
         return pixmap
 
     def _show_control_button_label(self, btn, index):
@@ -6644,6 +6692,7 @@ class GameSelector(QWidget):
                     fade_out_thumb.finished.connect(_del_old_thumb)
                     if not hasattr(self, '_label_fade_anims'):
                         self._label_fade_anims = []
+                    self._cleanup_label_animations()
                     self._label_fade_anims.append(fade_out_thumb)
                     fade_out_thumb.start()
                 else:
@@ -6684,6 +6733,7 @@ class GameSelector(QWidget):
                     fade_out.finished.connect(_del_old)
                     if not hasattr(self, '_label_fade_anims'):
                         self._label_fade_anims = []
+                    self._cleanup_label_animations()
                     self._label_fade_anims.append(fade_out)
                     fade_out.start()
                 else:
@@ -7048,6 +7098,10 @@ class GameSelector(QWidget):
                 btn.show()  # 确保按钮可见
                 
                 # 创建飞入动画并存储为实例变量以防被回收
+                if hasattr(self, 'fly_in_animation') and self.fly_in_animation:
+                    self.fly_in_animation.stop()
+                    self.fly_in_animation.deleteLater()
+                    
                 self.fly_in_animation = QPropertyAnimation(btn, b"geometry")
                 self.fly_in_animation.setDuration(300)
                 self.fly_in_animation.setStartValue(start_geometry)
@@ -7074,6 +7128,10 @@ class GameSelector(QWidget):
             except RuntimeError:
                 return
             # 创建向上消失的动画
+            if hasattr(self, 'animation') and self.animation:
+                self.animation.stop()
+                self.animation.deleteLater()
+                
             self.animation = QPropertyAnimation(self.extra_background_button, b"geometry")
             self.animation.setDuration(150)
             
@@ -7882,11 +7940,12 @@ class GameSelector(QWidget):
             self.ignore_input_until = current_time + 500
             return
         
-            # 若启动悬浮窗存在，关闭启动悬浮窗
-        if hasattr(self, 'launch_overlay'):
-            if self.launch_overlay and self.launch_overlay.isVisible():
+        # 若启动悬浮窗存在，关闭启动悬浮窗
+        if getattr(self, 'launch_overlay', None):
+            if self.launch_overlay.isVisible():
+                # hide() 会触发 hideEvent，其中已经包含了 _stop_launch_animations 和 self.launch_overlay = None
                 self.launch_overlay.hide()
-                self.launch_overlay._stop_launch_animations()
+                return # 既然已经关闭了遮罩，就不要继续处理本次输入了，防止误触底层按钮
         # 正常窗口处理逻辑
         if hasattr(self, 'screenshot_window') and self.screenshot_window.isVisible():
             self.ignore_input_until = current_time + 200
@@ -8598,7 +8657,7 @@ class GameSelector(QWidget):
             run_as_user(current_file["path"])
         self.floating_window.current_index = 0
         self.floating_window.update_highlight()
-        self.floating_window.hide()
+        self.floating_window.close()
 
     def show_settings_window(self):
         """显示设置窗口"""
@@ -8629,7 +8688,9 @@ class GameSelector(QWidget):
         QApplication.quit()
         # 只传递可执行文件的路径，不传递其他参数
         subprocess.Popen([sys.executable])
-
+    def addgamebutton(self):
+        self.hide_window()
+        self.addandrefresh_games()
     def addandrefresh_games(self, args=None):
         """添加游戏，处理 extra_paths 中的快捷方式（线程安全）"""
         self.qsaa_thread = SunshineAppManagerThread(args=args)
@@ -9179,6 +9240,7 @@ class FileDialogThread(QThread):
 class FloatingWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)  # 确保窗口关闭时会被销毁
         bat_dir = './morefloder'
         self.current_running_apps = set()
         if not os.path.exists(bat_dir):
@@ -9401,10 +9463,28 @@ class FloatingWindow(QWidget):
         self._hide_anim_group.addAnimation(opacity_anim)
         
         # 动画完成后隐藏窗口
-        self._hide_anim_group.finished.connect(lambda: super(FloatingWindow, self).hide())
+        self._hide_anim_group.finished.connect(self.close)  # 改为 close() 以触发销毁
         
         # 启动动画
         self._hide_anim_group.start()
+    
+    def closeEvent(self, event):
+        """窗口关闭时，清理资源"""
+        # 清理父窗口的引用
+        if self.parent() and hasattr(self.parent(), 'floating_window') and self.parent().floating_window is self:
+            self.parent().floating_window = None
+        
+        # 停止并清理动画
+        if self._show_anim_group:
+            self._show_anim_group.stop()
+            self._show_anim_group.deleteLater()
+            self._show_anim_group = None
+        if self._hide_anim_group:
+            self._hide_anim_group.stop()
+            self._hide_anim_group.deleteLater()
+            self._hide_anim_group = None
+            
+        super().closeEvent(event)
     
     def handle_gamepad_input(self, action, firstinput):
         """处理手柄输入"""
@@ -11643,11 +11723,12 @@ class SettingsWindow(QWidget):
         layout.addLayout(icon_title_layout)
     
         # 软件简介
-        intro = QLabel("桌面游戏启动器\n"
-                       "支持手柄一键启动、收藏、截图等功能，"
-                       "支持自定义快捷方式、进程管理、游戏冻结等多种实用功能。\n"
-                       "专为Windows手柄操作优化。\n长按start+back打开鼠标映射。"
-                       "在手柄鼠标映射启用时点击系统托盘图标可停止映射\n\n"
+        intro = QLabel("[一个追求简洁而全面的游戏启动器，让你的游戏库井井有条，打开即玩。]\n\n"
+                       "本启动器的核心功能是手柄模拟鼠标，主页按X或长按start+back可打开鼠标映射，\n"
+                       "按下LS/RS来取消手柄模拟，灵活运用该功能可实现手柄对电脑的全局掌控。\n"
+                       "程序使用手柄主页键呼出主页面，推荐关闭Xbox,Steam等程序的手柄按键呼出实现最佳体验\n"
+                       "程序不断改进中，欢迎加入QQ群反馈建议和问题，或在GitHub提交issue。\n"
+                       "\n"
                        "手柄鼠标映射键位操作示意图：")
         intro.setStyleSheet(f"color: white; font-size: {int(18 * scale)}px;")
         intro.setWordWrap(True)
@@ -11656,6 +11737,7 @@ class SettingsWindow(QWidget):
         # 手柄映射示意图
         #'<a href="https://wwse.lanzn.com/b00uz4bjmd" style="color:#93ffff;">蓝奏（密码:85jl）</a>　|　'
         title_label = QLabel(
+            '<a href="https://qm.qq.com/q/pSHQTlnbJQ" style="color:#93ffff;">QQ群</a>　|　'
             '<a href="https://github.com/gmaox/DeskGamix" style="color:#93ffff;">GitHub</a>　|　'
             '<a href="https://space.bilibili.com/258889407" style="color:#93ffff;">B站主页</a>'
         )
