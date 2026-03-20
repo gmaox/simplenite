@@ -7832,27 +7832,43 @@ class GameSelector(QWidget):
                     self.back_start_pressed_time = None
                     break
         #print(f"处理手柄输入: {action}")
-        if hasattr(self, 'confirm_dialog') and self.confirm_dialog and self.confirm_dialog.isVisible():  # 如果确认弹窗显示中
-            print("确认弹窗显示中")
-            self.ignore_input_until = current_time + 500
-            self.confirm_dialog.handle_gamepad_input(action)
-            return
+        try:
+            if hasattr(self, 'confirm_dialog') and self.confirm_dialog and self.confirm_dialog.isVisible():  # 如果确认弹窗显示中
+                print("确认弹窗显示中")
+                self.ignore_input_until = current_time + 500
+                self.confirm_dialog.handle_gamepad_input(action)
+                return
+        except RuntimeError:
+            self.confirm_dialog = None
+            
         # 优先检查所有可能的 confirm_dialog，无论窗口是否可见
         # 检查 screenshot_window 的 confirm_dialog
-        if hasattr(self, 'screenshot_window') and hasattr(self.screenshot_window, 'confirm_dialog') and self.screenshot_window.confirm_dialog and self.screenshot_window.confirm_dialog.isVisible():
-            self.screenshot_window.handle_gamepad_input(action)
-            self.ignore_input_until = pygame.time.get_ticks() + 300 
-            return
+        try:
+            if hasattr(self, 'screenshot_window') and hasattr(self.screenshot_window, 'confirm_dialog') and self.screenshot_window.confirm_dialog and self.screenshot_window.confirm_dialog.isVisible():
+                self.screenshot_window.handle_gamepad_input(action)
+                self.ignore_input_until = pygame.time.get_ticks() + 300 
+                return
+        except RuntimeError:
+            if hasattr(self, 'screenshot_window'):
+                self.screenshot_window.confirm_dialog = None
+                
         # 检查 floating_window 的 confirm_dialog
-        if getattr(self, 'floating_window', None) and hasattr(self.floating_window, 'confirm_dialog') and self.floating_window.confirm_dialog and self.floating_window.confirm_dialog.isVisible():
-            self.floating_window.handle_gamepad_input(action, firstinput)
-            self.ignore_input_until = pygame.time.get_ticks() + 300 
-            return
+        try:
+            if getattr(self, 'floating_window', None) and hasattr(self.floating_window, 'confirm_dialog') and self.floating_window.confirm_dialog and self.floating_window.confirm_dialog.isVisible():
+                self.floating_window.handle_gamepad_input(action, firstinput)
+                self.ignore_input_until = pygame.time.get_ticks() + 300 
+                return
+        except RuntimeError:
+            if getattr(self, 'floating_window', None):
+                self.floating_window.confirm_dialog = None
         # 检查 settings_window
-        if hasattr(self, 'settings_window') and self.settings_window and self.settings_window.isVisible():
-            self.settings_window.handle_gamepad_input(action)
-            self.ignore_input_until = pygame.time.get_ticks() + 300 
-            return
+        try:
+            if hasattr(self, 'settings_window') and self.settings_window and self.settings_window.isVisible():
+                self.settings_window.handle_gamepad_input(action)
+                self.ignore_input_until = pygame.time.get_ticks() + 300 
+                return
+        except RuntimeError:
+            self.settings_window = None
         
         if not self.gsfocus():  # 检测当前窗口是否为游戏选择界面
             # 按键长按超过800ms时不触发，直到抬起才return
@@ -7941,21 +7957,30 @@ class GameSelector(QWidget):
             return
         
         # 若启动悬浮窗存在，关闭启动悬浮窗
-        if getattr(self, 'launch_overlay', None):
-            if self.launch_overlay.isVisible():
-                # hide() 会触发 hideEvent，其中已经包含了 _stop_launch_animations 和 self.launch_overlay = None
-                self.launch_overlay.hide()
-                return # 既然已经关闭了遮罩，就不要继续处理本次输入了，防止误触底层按钮
+        try:
+            if getattr(self, 'launch_overlay', None):
+                if self.launch_overlay.isVisible():
+                    # hide() 会触发 hideEvent，其中已经包含了 _stop_launch_animations 和 self.launch_overlay = None
+                    self.launch_overlay.hide()
+                    return # 既然已经关闭了遮罩，就不要继续处理本次输入了，防止误触底层按钮
+        except RuntimeError:
+            self.launch_overlay = None
         # 正常窗口处理逻辑
-        if hasattr(self, 'screenshot_window') and self.screenshot_window.isVisible():
-            self.ignore_input_until = current_time + 200
-            self.screenshot_window.handle_gamepad_input(action)
-            return
+        try:
+            if hasattr(self, 'screenshot_window') and self.screenshot_window.isVisible():
+                self.ignore_input_until = current_time + 200
+                self.screenshot_window.handle_gamepad_input(action)
+                return
+        except RuntimeError:
+            self.screenshot_window = None
         
-        if getattr(self, 'floating_window', None) and self.floating_window.isVisible():
-            self.ignore_input_until = current_time + 200
-            self.floating_window.handle_gamepad_input(action, firstinput)
-            return
+        try:
+            if getattr(self, 'floating_window', None) and self.floating_window.isVisible():
+                self.ignore_input_until = current_time + 200
+                self.floating_window.handle_gamepad_input(action, firstinput)
+                return
+        except RuntimeError:
+            self.floating_window = None
 
         # 新增焦点切换逻辑（基于位置：切换时选取最近的按钮）
         if action == 'DOWN' and self.current_section == 0 and self.more_section == 0:
@@ -11727,6 +11752,7 @@ class SettingsWindow(QWidget):
                        "本启动器的核心功能是手柄模拟鼠标，主页按X或长按start+back可打开鼠标映射，\n"
                        "按下LS/RS来取消手柄模拟，灵活运用该功能可实现手柄对电脑的全局掌控。\n"
                        "程序使用手柄主页键呼出主页面，推荐关闭Xbox,Steam等程序的手柄按键呼出实现最佳体验\n"
+                       "主页面肩键可以调节系统音量，两肩键一起按住可以静音。主页面上移摇杆可以打开工具菜单\n"
                        "程序不断改进中，欢迎加入QQ群反馈建议和问题，或在GitHub提交issue。\n"
                        "\n"
                        "手柄鼠标映射键位操作示意图：")
