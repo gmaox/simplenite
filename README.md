@@ -1,5 +1,5 @@
 # DeskGamix
-新概念游戏前端，为非模拟器游戏/家用电脑而生，仿Switch界面
+一个追求简洁而全面的游戏启动器，配置简单占用低，仿Switch界面
 
 [国内加速下载链接获取](http://gmaox.github.io/deskgamix)
 
@@ -15,7 +15,8 @@
 
 **一款轻量级的Windows 游戏启动工具，内置多种游戏工具，轻松在Windows 10/11系统上优雅地掌控您的设备进行游戏**
 
-![1000131674](https://github.com/user-attachments/assets/f2f0966b-c572-4681-8dc4-a279819e04e2)
+![1000131674](https://github.com/user-attachments/assets/e84bf1d8-989e-4e89-aeb4-1ae57e348992)
+
 
 **⭐功能亮点**
 
