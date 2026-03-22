@@ -1,4 +1,4 @@
-# DeskGamix
+# Simplenite
 一个追求简洁而全面的游戏启动器，配置简单占用低，仿Switch界面
 
 [国内加速下载链接获取](http://gmaox.github.io/deskgamix)
@@ -62,7 +62,7 @@
 
  ` pip install PyQt5 pygame Pillow pywin32 psutil pyautogui icoextract -i https://pypi.tuna.tsinghua.edu.cn/simple ` 
 
-4.下载项目中的.py文件运行即可
+4.下载dev分支中的.py文件运行即可
 
 <hr>
 
