@@ -9,7 +9,7 @@ from PyQt5 import QtGui
 import pygame, math
 from PIL import Image, ImageFilter
 import win32gui,win32process,psutil,win32api,win32ui,win32security
-from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget, QStackedWidget
+from PyQt5.QtWidgets import QApplication, QListWidgetItem, QMainWindow, QMessageBox, QScroller, QSystemTrayIcon, QMenu , QVBoxLayout, QDialog, QGridLayout, QWidget, QPushButton, QLabel, QDesktopWidget, QHBoxLayout, QFileDialog, QSlider, QLineEdit, QProgressBar, QScrollArea, QFrame, QTabWidget, QStackedWidget, QTextEdit
 from PyQt5.QtGui import QPainter, QPen, QBrush, QFont, QPixmap, QIcon, QColor, QLinearGradient, QKeySequence
 from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, QTimer, QPoint, QProcess, QPropertyAnimation, QRect, QObject, QEasingCurve, QParallelAnimationGroup
 import subprocess, time, os,win32con, ctypes, re, win32com.client, ctypes, time, pyautogui
@@ -82,7 +82,10 @@ settings = {
     "more_favorites": [],
     "more_last_used": [],
     "extra_paths": [],
-    "scale_factor": 1.0  # 添加缩放因数的默认值
+    "scale_factor": 1.0,
+    "show_battery": False,
+    "use_peer_level_launch": False,
+    "debug_output_window": False
 }
 try:
     if os.path.exists(settings_path):
@@ -302,6 +305,13 @@ EXPLORERTOKEN = get_explorer_token()
 def run_as_user(path):
     # 去除引号
     path = path.strip('"')
+    if settings.get("use_peer_level_launch", False):
+        try:
+            print(f"以同级权限启动: {path}")
+            os.startfile(path)
+            return
+        except Exception as e:
+            print(f"同级权限启动失败，回退桌面权限启动: {e}")
     cmd = f'cmd.exe /c start "" "{path}"'
     print(f"以当前用户权限启动: {cmd}")
     win32process.CreateProcessAsUser(
@@ -316,6 +326,180 @@ def run_as_user(path):
         None,
         win32process.STARTUPINFO()
     )
+
+class _DebugStream(QObject):
+    message_signal = pyqtSignal(str)
+
+    def __init__(self, original_stream):
+        super().__init__()
+        self.original_stream = original_stream
+
+    def write(self, message):
+        if not isinstance(message, str):
+            message = str(message)
+        if self.original_stream:
+            self.original_stream.write(message)
+        if message:
+            self.message_signal.emit(message)
+
+    def flush(self):
+        if self.original_stream:
+            self.original_stream.flush()
+
+
+class DebugOutputWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("调试输出")
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(560, 320)
+        self._dragging = False
+        self._drag_offset = QPoint(0, 0)
+
+        self.title_bar = QWidget(self)
+        self.title_bar.setFixedHeight(30)
+        self.title_bar.setStyleSheet("""
+            QWidget {
+                background-color: rgba(18, 18, 18, 120);
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+            }
+            QLabel {
+                color: #dddddd;
+                font-size: 12px;
+            }
+            QPushButton {
+                color: #ffffff;
+                background-color: rgba(255, 255, 255, 30);
+                border: none;
+                border-radius: 6px;
+                min-width: 22px;
+                min-height: 20px;
+                max-width: 22px;
+                max-height: 20px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 55);
+            }
+        """)
+
+        self.title_label = QLabel("调试输出")
+        self.minimize_button = QPushButton("—")
+        self.minimize_button.clicked.connect(self.showMinimized)
+        self.title_bar.mousePressEvent = self._title_bar_mouse_press
+        self.title_bar.mouseMoveEvent = self._title_bar_mouse_move
+        self.title_bar.mouseReleaseEvent = self._title_bar_mouse_release
+
+        title_layout = QHBoxLayout(self.title_bar)
+        title_layout.setContentsMargins(10, 4, 8, 4)
+        title_layout.setSpacing(6)
+        title_layout.addWidget(self.title_label)
+        title_layout.addStretch()
+        title_layout.addWidget(self.minimize_button)
+
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: rgba(0, 0, 0, 120);
+                color: #ccffcc;
+                border: 1px solid rgba(255, 255, 255, 35);
+                border-radius: 10px;
+                font-size: 13px;
+                padding: 6px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.title_bar)
+        layout.addWidget(self.text_edit)
+
+    def append_message(self, message):
+        if not message:
+            return
+        self.text_edit.moveCursor(QtGui.QTextCursor.End)
+        self.text_edit.insertPlainText(message)
+        # 限制日志行数，避免窗口本身持有太多内存
+        doc = self.text_edit.document()
+        while doc.blockCount() > 400:
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.Start)
+            cursor.select(QtGui.QTextCursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+            doc = self.text_edit.document()
+        self.text_edit.moveCursor(QtGui.QTextCursor.End)
+
+    def position_top_left(self):
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        geometry = screen.availableGeometry()
+        margin = 50
+        self.move(
+            geometry.left() + margin,
+            geometry.top() + margin
+        )
+
+    def closeEvent(self, event):
+        # 禁止关闭，统一最小化到任务栏
+        self.showMinimized()
+        event.ignore()
+
+    def _title_bar_mouse_press(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            event.ignore()
+
+    def _title_bar_mouse_move(self, event):
+        if self._dragging and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+        else:
+            event.ignore()
+
+    def _title_bar_mouse_release(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = False
+            event.accept()
+        else:
+            event.ignore()
+
+
+_stdout_stream = None
+_stderr_stream = None
+_debug_output_window_ref = None
+
+
+def _attach_debug_output_window(window):
+    global _debug_output_window_ref
+    _debug_output_window_ref = window
+
+
+def _install_debug_output_redirect():
+    global _stdout_stream, _stderr_stream
+    if _stdout_stream is not None and _stderr_stream is not None:
+        return
+    _stdout_stream = _DebugStream(sys.stdout)
+    _stderr_stream = _DebugStream(sys.stderr)
+
+    def _forward(message):
+        if _debug_output_window_ref is not None:
+            _debug_output_window_ref.append_message(message)
+
+    _stdout_stream.message_signal.connect(_forward)
+    _stderr_stream.message_signal.connect(_forward)
+    sys.stdout = _stdout_stream
+    sys.stderr = _stderr_stream
 
 
 class TaskbarWindow(QMainWindow):
@@ -2908,7 +3092,7 @@ class LaunchOverlay(QWidget):
             QProgressBar::chunk { 
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #2E7D9B,
-                    stop:0.5 #66BB6A,
+                    stop:0.5 #2E7D9B,
                     stop:1 #2E7D9B);
                 border-radius: 2px;
             }
@@ -3624,6 +3808,7 @@ class GameSelector(QWidget):
     def __init__(self):
         global play_reload, GSHWND
         super().__init__()
+        _install_debug_output_redirect()
         self.back_start_pressed_time = None  # 初始化按键按下时间
         self.back_start_action = set()
         self.is_mouse_simulation_running = False
@@ -3648,6 +3833,9 @@ class GameSelector(QWidget):
         self.setStyleSheet("background-color: #1e1e1e;")  # 设置深灰背景色
         self.killexplorer = settings.get("killexplorer", False)
         self.freeze = settings.get("freeze", False)
+        self.debug_output_window = DebugOutputWindow()
+        _attach_debug_output_window(self.debug_output_window)
+        self.apply_debug_output_setting()
         self.freezeapp = None
         self.winTaskbar = TaskbarWindow()
         if self.killexplorer == True and STARTUP == False:
@@ -3698,7 +3886,7 @@ class GameSelector(QWidget):
         self.row_count = settings.get("row_count", 6)  # 每行显示的按钮数量
 
         # 从设置中读取主页游戏数量，如果不存在则使用默认值
-        self.buttonsindexset = settings.get("buttonsindexset", 4)
+        self.buttonsindexset = settings.get("buttonsindexset", 12)
 
         # 创建顶部布局
         self.top_layout = QHBoxLayout()
@@ -3757,7 +3945,7 @@ class GameSelector(QWidget):
             }}
         """)
         self.favorite_button.clicked.connect(self.on_button_clicked)
-        self.favorite_button.clicked.connect(self.toggle_favorite)
+        self.favorite_button.clicked.connect(self.on_favorite_button_clicked)
 
         # 创建退出按钮
         self.quit_button = QPushButton("*")
@@ -4061,7 +4249,7 @@ class GameSelector(QWidget):
             controller_name = controller_data['controller'].get_name()
             self.update_controller_status(controller_name)
         # 右侧文字
-        self.right_label = QLabel("A / 进入游戏        Y / 关闭游戏        X / 鼠标模拟        ≡ / 游戏菜单            📦️Simplenite v0.95.7")
+        self.right_label = QLabel("A / 进入游戏        Y / 关闭游戏        X / 鼠标模拟        ≡ / 游戏菜单            📦️Simplenite v0.95.8")
         self.right_label.setStyleSheet(f"""
             QLabel {{
                 font-family: "Microsoft YaHei"; 
@@ -4655,6 +4843,11 @@ class GameSelector(QWidget):
                     self.screenshot_window.show()
             except Exception:
                 pass
+            try:
+                if hasattr(self, "debug_output_window") and self.debug_output_window:
+                    self.debug_output_window.position_top_left()
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -4928,8 +5121,16 @@ class GameSelector(QWidget):
         # 判断网络状态
         is_connected = ctypes.windll.wininet.InternetGetConnectedState(None, 0)
         network_status = "🛜" if is_connected else "✈️"
-        # 更新 time_label
-        self.time_label.setText(f"{current_time}    {network_status}")
+        text = f"{current_time}    {network_status}"
+        if settings.get("show_battery", False):
+            try:
+                b = psutil.sensors_battery()
+                if b is not None and b.percent is not None:
+                    icon = "⚡" if getattr(b, "power_plugged", False) else ""
+                    text = f"{text}    {int(b.percent)}%{icon}"
+            except Exception:
+                pass
+        self.time_label.setText(text)
     def show_window(self):
         """显示窗口"""
         # 先设置透明度为0，避免闪烁
@@ -5038,6 +5239,52 @@ class GameSelector(QWidget):
             
         self._hide_anim.finished.connect(on_finished)
         self._hide_anim.start()
+    def on_favorite_button_clicked(self):
+        if getattr(self, 'current_section', 0) == 1 and getattr(self, 'more_section', 0) == 0:
+            idx = getattr(self, 'current_index', 0)
+            btn = None
+            if hasattr(self, 'control_buttons') and 0 <= idx < len(self.control_buttons):
+                btn = self.control_buttons[idx]
+            if btn and hasattr(btn, 'window_info') and btn.window_info:
+                info = btn.window_info
+                app_title = info.get('title') or info.get('exe_name')
+                self.confirm_dialog = ConfirmDialog(f"是否关闭下列窗口？\n{app_title}", scale_factor=self.scale_factor)
+                result = self.confirm_dialog.exec_()
+                self.ignore_input_until = pygame.time.get_ticks()
+                if result != QDialog.Accepted:
+                    return
+                try:
+                    hwnd = info.get('hwnd')
+                    if hwnd and win32gui.IsWindow(hwnd):
+                        try:
+                            win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_CLOSE, 0)
+                        except Exception:
+                            pass
+                        # try:
+                        #     win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                        # except Exception:
+                        #     pass
+                        start_time = time.time()
+                        while True:
+                            QApplication.processEvents()
+                            time.sleep(0.05)
+                            exists = False
+                            try:
+                                exists = win32gui.IsWindow(hwnd)
+                            except Exception:
+                                exists = False
+                            if not exists:
+                                break
+                            if time.time() - start_time > 5:
+                                break
+                        QTimer.singleShot(100, self.update_highlight)
+                except Exception:
+                    pass
+                else:
+                    self.update_background_buttons()
+                return
+            return
+        self.toggle_favorite()
     def switch_to_all_software(self):
         """切换到"所有软件"界面"""
         self.scale_factor2 = self.scale_factor  # 用于按钮和图像的缩放因数
@@ -7478,20 +7725,20 @@ class GameSelector(QWidget):
             #     if result == QDialog.Accepted:  # 如果按钮被点击
             #         self.custom_valid_show(game["name"])
             #         return
-    # def custom_valid_show(self, gamename):
-    #     settings_window = SettingsWindow(self)
-    #     settings_window.show_custom_valid_apps_dialog()
-    #     def fill_name_and_show():
-    #         # 找到刚刚弹出的dialog中的name_edit并填充
-    #         # 由于show_custom_valid_apps_dialog内部定义了name_edit变量，需通过遍历子控件查找
-    #         for widget in QApplication.topLevelWidgets():
-    #             if isinstance(widget, QDialog) and widget.windowTitle() == "添加自定义游戏进程":
-    #                 for child in widget.findChildren(QLineEdit):
-    #                     if child.placeholderText().startswith("点击选择游戏名称"):
-    #                         child.setText(gamename)
-    #                         break
-    #                 break
-    #     QTimer.singleShot(100, fill_name_and_show)
+    def custom_valid_show(self, gamename):
+        settings_window = SettingsWindow(self)
+        settings_window.show_custom_valid_apps_dialog()
+        def fill_name_and_show():
+            # 找到刚刚弹出的dialog中的name_edit并填充
+            # 由于show_custom_valid_apps_dialog内部定义了name_edit变量，需通过遍历子控件查找
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, QDialog) and widget.windowTitle() == "添加自定义游戏进程":
+                    for child in widget.findChildren(QLineEdit):
+                        if child.placeholderText().startswith("点击选择游戏名称"):
+                            child.setText(gamename)
+                            break
+                    break
+        QTimer.singleShot(100, fill_name_and_show)
     # 判断当前窗口是否全屏(当设置中开启时)
     def is_current_window_fullscreen(self):
         try:
@@ -8109,6 +8356,8 @@ class GameSelector(QWidget):
                 elif action == 'X':  # X键开悬浮窗
                     self.control_buttons[self.current_index].click()
                     QTimer.singleShot(210, self.mouse_simulation)
+                elif action == 'Y':
+                    self.on_favorite_button_clicked()
                 elif action == 'B':
                     #self.exitdef()  # 退出程序
                     self.hide_window()
@@ -8695,12 +8944,27 @@ class GameSelector(QWidget):
             self.settings_window = SettingsWindow(self)
         self.settings_window.show()
 
+    def apply_debug_output_setting(self):
+        if not hasattr(self, "debug_output_window") or self.debug_output_window is None:
+            return
+        self.debug_output_window.position_top_left()
+        if settings.get("debug_output_window", False):
+            self.debug_output_window.show()
+            self.debug_output_window.raise_()
+        else:
+            self.debug_output_window.hide()
+
     def is_admin(self):
         """检查当前进程是否具有管理员权限"""
         try:
             return ctypes.windll.shell32.IsUserAnAdmin()
         except:
             return False
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, "debug_output_window") and self.debug_output_window:
+            self.debug_output_window.position_top_left()
 
     def run_as_admin(self):
         """以管理员权限重新运行程序"""
@@ -11327,6 +11591,7 @@ class SettingsWindow(QWidget):
         add_category("主机", "console", True)
         add_category("游玩时长", "play_time")
         add_category("关于", "about")
+        add_category("开发者选项", "developer")
 
         left_layout.addStretch()
 
@@ -11357,11 +11622,13 @@ class SettingsWindow(QWidget):
         self.placeholder_page = self._create_placeholder_page(scale)
         self.play_time_page = self._create_play_time_page(scale)
         self.about_page = self._create_about_page(scale)
+        self.developer_page = self._create_developer_page(scale)
 
         self.pages.addWidget(self.console_page)     # index 0 - 主机
         self.pages.addWidget(self.placeholder_page) # index 1 - 其它
         self.pages.addWidget(self.play_time_page)   # index 2 - 游玩时长
         self.pages.addWidget(self.about_page)       # index 3 - 关于
+        self.pages.addWidget(self.developer_page)   # index 4 - 开发者选项
 
         main_layout.addWidget(left_container)
         main_layout.addWidget(right_container, 1)
@@ -11520,6 +11787,25 @@ class SettingsWindow(QWidget):
         self.freeze_button.clicked.connect(self.toggle_freeze)
         layout.addWidget(self.freeze_button)
 
+        self.show_battery_button = QPushButton(
+            f"时间栏显示电量  {'开' if settings.get('show_battery', False) else '关'}"
+        )
+        self.show_battery_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(28 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+            }}
+        """)
+        self.show_battery_button.clicked.connect(self.toggle_show_battery)
+        layout.addWidget(self.show_battery_button)
+
         # 行：开机自启
         self.open_folder_button = QPushButton("开启/关闭开机自启")
         self.open_folder_button.setStyleSheet(f"""
@@ -11616,6 +11902,7 @@ class SettingsWindow(QWidget):
             self.refresh_button,
             self.killexplorer_button,
             self.freeze_button,
+            self.show_battery_button,
             self.open_folder_button,
             self.hotkey_row_button,
             self.close_program_button
@@ -11794,6 +12081,68 @@ class SettingsWindow(QWidget):
         self.focusable_widgets_about = []
 
         return page
+
+    def _create_developer_page(self, scale: float) -> QWidget:
+        """开发者选项页"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(int(10 * scale), int(20 * scale), int(10 * scale), int(20 * scale))
+        layout.setSpacing(int(12 * scale))
+
+        self.peer_launch_button = QPushButton(
+            f"使用同级权限启动应用而非桌面权限  {'开' if settings.get('use_peer_level_launch', False) else '关'}"
+        )
+        self.peer_launch_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(26 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+            }}
+        """)
+        self.peer_launch_button.clicked.connect(self.toggle_peer_launch_mode)
+        layout.addWidget(self.peer_launch_button)
+
+        hint1 = QLabel("该选项可解决部分环境下启动游戏库管理工具/应用游戏时启动对应应用失败问题，但会导致启动的应用附带管理员权限")
+        hint1.setWordWrap(True)
+        hint1.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
+        layout.addWidget(hint1)
+
+        self.debug_window_button = QPushButton(
+            f"启用调试输出窗口  {'开' if settings.get('debug_output_window', False) else '关'}"
+        )
+        self.debug_window_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(26 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+            }}
+        """)
+        self.debug_window_button.clicked.connect(self.toggle_debug_output_window)
+        layout.addWidget(self.debug_window_button)
+
+        hint = QLabel("该选项用于开启调试输出窗口。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
+        layout.addWidget(hint)
+        layout.addStretch()
+
+        self.focusable_widgets_developer = [
+            self.peer_launch_button,
+            self.debug_window_button,
+        ]
+        return page
     def switch_category(self, key: str):
         """切换左侧类别"""
         for k, btn in self.category_buttons:
@@ -11808,6 +12157,9 @@ class SettingsWindow(QWidget):
         elif key == "about":
             self.current_title.setText("关于")
             self.pages.setCurrentIndex(3)
+        elif key == "developer":
+            self.current_title.setText("开发者选项")
+            self.pages.setCurrentIndex(4)
         else:
             # 其它类别暂时复用同一个占位页
             btn = next((b for k2, b in self.category_buttons if k2 == key), None)
@@ -12554,6 +12906,35 @@ class SettingsWindow(QWidget):
         with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=4)
         self.parent().freeze = settings["freeze"]
+
+    def toggle_show_battery(self):
+        settings["show_battery"] = not settings.get("show_battery", False)
+        self.show_battery_button.setText(f"时间栏显示电量 {'√' if settings['show_battery'] else '×'}")
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+        try:
+            if self.parent() and hasattr(self.parent(), "update_time"):
+                self.parent().update_time()
+        except Exception:
+            pass
+
+    def toggle_peer_launch_mode(self):
+        settings["use_peer_level_launch"] = not settings.get("use_peer_level_launch", False)
+        self.peer_launch_button.setText(
+            f"使用同级权限启动应用而非桌面权限  {'开' if settings['use_peer_level_launch'] else '关'}"
+        )
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+
+    def toggle_debug_output_window(self):
+        settings["debug_output_window"] = not settings.get("debug_output_window", False)
+        self.debug_window_button.setText(
+            f"启用调试输出窗口  {'开' if settings['debug_output_window'] else '关'}"
+        )
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+        if self.parent() and hasattr(self.parent(), "apply_debug_output_setting"):
+            self.parent().apply_debug_output_setting()
 
     def update_buttonsindexset(self, value):
         """更新主页游戏数量并保存设置"""
