@@ -1,21 +1,27 @@
 # Simplenite
-一个追求简洁而全面的游戏启动器，配置简单占用低，仿Switch界面
+一个追求简洁全面的游戏启动器，配置简单占用低，仿Switch界面
 
 [国内加速下载链接获取](http://gmaox.github.io/deskgamix)
 
-
+<details>
+<summary>
+Xbox全屏体验指南
+</summary>
+1.[点击安装OmniConsole](https://8bit2qubit.github.io/omniconsole-site/zh-CN/download/)
   
+2.按照OmniConsole教程完成全屏基础设置后，参考下图将Simplenite添加在自定义中即可在全屏模式下体验Simplenite
+  
+<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
 
-
-
-
+</details>
+  
 <hr>
 
 # 软件简介
 
-**一款轻量级的Windows 游戏启动工具，内置多种游戏工具，轻松在Windows 10/11系统上优雅地掌控您的设备进行游戏**
+**一款轻量级的Windows 游戏启动工具，内置多种游戏工具，轻松在Windows 10/11系统上掌控您的设备进行游戏**
 
-![1000131674](https://github.com/user-attachments/assets/e84bf1d8-989e-4e89-aeb4-1ae57e348992)
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/2e8f4c26-88c4-43a0-8e25-7c64e4859530" />
 
 
 **⭐功能亮点**
@@ -32,7 +38,7 @@
 
 **除了游戏启动，该软件还有特色功能如下：**
 
-**鼠标模拟**：左右非对称性摇杆，精确定位鼠标。特色键盘模拟，上手难度低效率高。
+**鼠标模拟**：左右非对称性摇杆，精确定位鼠标。特色键盘模拟，上手难度低效率高，主动式开启方便应急使用。
 
 **工具合集**：左上角加入常用软件启动菜单，可设置游戏连携启动，减少开机启动项
 
