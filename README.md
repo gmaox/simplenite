@@ -1,4 +1,85 @@
 # Simplenite
+
+<details>
+<summary>
+English README
+</summary>
+
+A clean yet feature-rich game launcher with simple configuration, low resource usage, and a Nintendo Switch-inspired interface.
+
+<details>
+<summary>
+Xbox Full-Screen Experience Guide
+</summary>
+
+1. [Click here to install OmniConsole](https://8bit2qubit.github.io/omniconsole-site/zh-CN/download/)
+
+2. After completing the basic full-screen setup by following the OmniConsole tutorial, refer to the image below and add Simplenite to the Custom section. You can then enjoy Simplenite in full-screen mode.
+
+<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
+
+</details>
+
+<hr>
+
+# Overview
+
+**A lightweight Windows game launcher with a collection of built-in gaming utilities, making it easy to manage your gaming experience on Windows 10/11.**
+
+<img width="1909" height="1080" alt="1000206717" src="https://github.com/user-attachments/assets/49a88ab2-aaba-4f84-ab6f-b066711f8a52" />
+
+**⭐ Highlights**
+
+**Minimalist Design**: No complicated settings menus. Manage your game library in full-screen mode for a truly immersive experience.
+
+**Low Resource Usage**: Built on efficient Qt components, requiring only a few dozen megabytes of memory. Fast startup speed—go from picking up your controller to launching a game in as little as 3 seconds.
+
+**Thoughtful Design**: Carefully arranged layouts, excellent touch support, and comprehensive controller compatibility (Xbox/DS4).
+
+<img width="1911" height="1080" alt="1000206719" src="https://github.com/user-attachments/assets/ad85f498-e6d7-4548-966d-cea438b2ee72" />
+
+**⭐ Features**
+
+**Beyond game launching, the software also includes the following features:**
+
+**Mouse Emulation**: Asymmetrical dual-stick controls for precise mouse movement. Includes a unique keyboard emulation system that is easy to learn, efficient to use, and can be activated on demand for emergency situations.
+
+**Utility Hub**: A quick-launch menu for commonly used applications is available in the upper-left corner. Applications can be configured to launch alongside games, reducing the number of startup programs.
+
+**Game Save Sync**: One-click cloud save synchronization via WebDAV.
+
+**Game Screenshots**: Capture screenshots instantly with your controller and preserve your favorite gaming moments.
+
+**Immersive Mode**: Hide desktop clutter and distractions to recreate a handheld-console-like experience.
+
+I've personally found this launcher very comfortable to use, and you're welcome to give it a try. While many game frontend developers prioritize aesthetics over practicality, I focused on the user experience first. A significant amount of thought has gone into optimizing workflows and interaction logic to create a well-balanced game launcher. That said, my abilities are limited, and there may still be imperfections. Your understanding is appreciated.
+
+<hr>
+
+*This software shares its game library with Sunshine. It automatically detects whether Sunshine is installed, and if present, newly added games will be synchronized to Sunshine's game library automatically.*
+
+<hr>
+
+# Build
+
+1. Download and install [Python 3.8.5 (64-bit)](https://www.python.org/ftp/python/3.8.5/python-3.8.5-amd64.exe) (make sure to enable **Add Python to PATH** during installation).
+
+2. Download any IDE (for example, Visual Studio Code from the Microsoft Store).
+
+3. Run the following command in a terminal to install the required dependencies:
+
+`pip install PyQt5 pygame Pillow pywin32 psutil pyautogui icoextract -i https://pypi.tuna.tsinghua.edu.cn/simple`
+
+4. Download the `.py` files from the `dev` branch and run them.
+
+---
+
+END
+
+---
+
+</details>
+
 一个追求简洁全面的游戏启动器，配置简单占用低，仿Switch界面
 
 [国内加速下载链接获取](http://gmaox.github.io/deskgamix)
