@@ -6,6 +6,7 @@ English README
 </summary>
 
 A clean yet feature-rich game launcher with simple configuration, low resource usage, and a Nintendo Switch-inspired interface.
+https://discord.gg/ZZBwvfht3
 
 <details>
 <summary>
