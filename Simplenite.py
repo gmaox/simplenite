@@ -25,7 +25,7 @@ from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, pyqtSlot, QT
 import subprocess, time, os,win32con, ctypes, re, win32com.client, ctypes, time, pyautogui
 from ctypes import wintypes
 
-APP_VERSION = "0.97.3"
+APP_VERSION = "0.97.4"
 
 #& C:/Users/86150/AppData/Local/Programs/Python/Python38/python.exe -m PyInstaller --add-data "fav.ico;." --add-data '1.png;.' --add-data 'pssuspend64.exe;.' -w Simplenite.py -i '.\fav.ico' --uac-admin --noconfirm
 # 定义 Windows API 函数
@@ -7612,6 +7612,8 @@ class GameSelector(QWidget):
 
         self.killexplorer = settings.get("killexplorer", False)
         self.freeze = settings.get("freeze", False)
+        self.freeze_features = settings.get("freeze_features", False)
+        self.frozen_games = set()  # 记录手动冻结的游戏名，用于显示❄已冻结❄徽标
         self.debug_output_window = DebugOutputWindow()
         _attach_debug_output_window(self.debug_output_window)
         self.apply_debug_output_setting()
@@ -7758,6 +7760,23 @@ class GameSelector(QWidget):
         """)
         self.screenshot_button.clicked.connect(self.on_button_clicked)
         self.screenshot_button.clicked.connect(self.open_selected_game_screenshot)
+
+        # 新增：冻结按钮（冻结相关功能开启时显示，在游戏详情按钮右侧）
+        self.freeze_button = QPushButton(" ❄ ")
+        self.freeze_button.setFixedSize(int(40 * self.scale_factor), int(40 * self.scale_factor))
+        self.freeze_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                border-radius: {int(20 * self.scale_factor)}px;
+                border: none;
+                color: #888888;
+                font-size: {int(14 * self.scale_factor)}px;
+            }}
+        """)
+        self.freeze_button.clicked.connect(self.on_button_clicked)
+        self.freeze_button.clicked.connect(self._on_freeze_button_clicked)
+        # 默认隐藏，仅当冻结相关功能开启且当前游戏运行中时显示
+        self.freeze_button.setVisible(False)
 
         # 创建游戏标题标签
         sorted_games = self.sort_games()
@@ -7929,6 +7948,7 @@ class GameSelector(QWidget):
 
         # 将按钮添加到左侧布局
         self.left_layout.addWidget(self.screenshot_button)
+        self.left_layout.addWidget(self.freeze_button)
 
         # 初始化时隐藏悬浮窗
         self.control_buttons = []
@@ -10649,11 +10669,14 @@ class GameSelector(QWidget):
             """)
             star_label.move(int(5 * self.scale_factor2), int(5 * self.scale_factor2)) 
         if game["name"] in self.player:
-            star_label = QLabel("🌊运行中🌊\n点击恢复", button)  
+            is_frozen = game["name"] in self.frozen_games
+            badge_text = "❄ 已挂起 ❄\n点击恢复" if is_frozen else "🌊运行中🌊\n点击恢复"
+            badge_color = "#007ca5" if is_frozen else "yellow"
+            star_label = QLabel(badge_text, button)
             star_label.setAlignment(Qt.AlignCenter)
             star_label.setStyleSheet(f"""
                 QLabel {{
-                    color: yellow;
+                    color: {badge_color};
                     font-size: {int(20 * self.scale_factor2)}px;
                     padding: {int(5 * self.scale_factor2)}px;
                     background-color: rgba(46, 46, 46, 0.7);
@@ -10743,6 +10766,17 @@ class GameSelector(QWidget):
                 # 检查当前游戏是否在运行
                 current_game_name = sorted_games[self.current_index]["name"]
                 is_running = current_game_name in self.player  # 假设 self.player 存储正在运行的游戏名称
+
+                # 冻结相关功能开启时，仅在当前游戏运行中且 pssuspend 存在时显示❄按钮
+                try:
+                    show_freeze = (self.freeze_features
+                                   and os.path.exists("./_internal/pssuspend64.exe")
+                                   and is_running
+                                   and self.more_section == 0
+                                   and self.current_index != self.buttonsindexset)
+                    self.freeze_button.setVisible(show_freeze)
+                except Exception:
+                    pass
 
                 # 更新 favorite_button 的原始文本（存储在字典中）
                 if is_running:
@@ -12569,8 +12603,8 @@ class GameSelector(QWidget):
         if self.more_section == 0 and self.current_index == self.buttonsindexset: # 如果点击的是"更多"按钮
             self.switch_to_all_software()
             return
-        #冻结相关
-        if os.path.exists("./_internal/pssuspend64.exe") and self.freeze:
+        #冻结相关：冻结相关功能开启时，点击游戏执行原解冻逻辑
+        if os.path.exists("./_internal/pssuspend64.exe") and self.freeze_features:
             for app in valid_apps:
                 if app["name"] == game_name:
                     game_path = app["path"]
@@ -12578,17 +12612,24 @@ class GameSelector(QWidget):
             else:
                 game_path = None
             if game_path:
-                for process in psutil.process_iter(['pid', 'exe', 'status']):
+                game_basename = os.path.basename(game_path).lower()
+                for process in psutil.process_iter(['pid', 'name']):
                     try:
-                        if process.info['exe'] and process.info['exe'].lower() == game_path.lower():
-                            # 检查进程状态是否为挂起（Windows下为 'stopped'）
-                            if process.status() == psutil.STATUS_STOPPED:
-                                # 恢复挂起
-                                subprocess.Popen(
-                                    ['./_internal/pssuspend64.exe', '-r', os.path.basename(game_path)],
-                                    creationflags=subprocess.CREATE_NO_WINDOW
-                                )
-                                time.sleep(0.5)  # 等待恢复
+                        pname = process.info['name']
+                        if not pname or pname.lower() != game_basename:
+                            continue
+                        # 仅对同名进程调 exe() 比对完整路径，避免对全部进程调用 exe()
+                        if process.exe().lower() != game_path.lower():
+                            continue
+                        # 检查进程状态是否为挂起（Windows下为 'stopped'）
+                        if process.status() == psutil.STATUS_STOPPED:
+                            # 恢复挂起
+                            subprocess.Popen(
+                                ['./_internal/pssuspend64.exe', '-r', os.path.basename(game_path)],
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                            time.sleep(0.5)  # 等待恢复
+                            self.frozen_games.discard(game_name)  # 清除冻结标记
                     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                         continue
         # 恢复窗口
@@ -12710,12 +12751,15 @@ class GameSelector(QWidget):
                             return True
                         # 仅当目标进程未挂起时才执行挂起
                         is_stopped = False
-                        for proc in psutil.process_iter(['name', 'status']):
+                        for proc in psutil.process_iter(['name']):
                             try:
-                                if proc.info['name'] and proc.info['name'].lower() == exe_name.lower():
-                                    if proc.status() == psutil.STATUS_STOPPED:
-                                        is_stopped = True
-                                        break
+                                pname = proc.info['name']
+                                if not pname or pname.lower() != exe_name.lower():
+                                    continue
+                                # 仅对同名进程调 status()，避免对全部进程调用 status()
+                                if proc.status() == psutil.STATUS_STOPPED:
+                                    is_stopped = True
+                                    break
                             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                                 continue
                         # 判断exe_path是否在valid_apps的path中
@@ -13512,10 +13556,88 @@ class GameSelector(QWidget):
                     if not getattr(self, '_no_games_mode', False):
                         self.open_selected_game_screenshot()
                 elif action == 'BACK':  # SELECT键
-                    pass
+                    # 冻结相关功能开启时，Back键冻结/解冻当前选中游戏
+                    if self.freeze_features and not getattr(self, '_no_games_mode', False):
+                        sorted_games = self.sort_games()
+                        if sorted_games and 0 <= self.current_index < len(sorted_games):
+                            self._toggle_game_freeze(sorted_games[self.current_index]["name"])
 
         # 更新最后一次按键时间
         self.last_input_time = current_time
+
+    def _on_freeze_button_clicked(self):
+        """顶部❄按钮点击：对当前选中游戏执行冻结/解冻"""
+        if not self.freeze_features:
+            return
+        sorted_games = self.sort_games()
+        if not sorted_games or self.current_index >= len(sorted_games):
+            return
+        self._toggle_game_freeze(sorted_games[self.current_index]["name"])
+
+    def _toggle_game_freeze(self, game_name):
+        """冻结/解冻指定游戏（手动切换）。冻结时加入 frozen_games，解冻时移除。"""
+        if not os.path.exists("./_internal/pssuspend64.exe"):
+            return
+        # 查找游戏 exe 路径
+        game_path = None
+        for app in valid_apps:
+            if app["name"] == game_name:
+                game_path = app["path"]
+                break
+        if not game_path:
+            return
+        game_basename = os.path.basename(game_path)
+        # 检查进程是否在运行且是否已冻结
+        process_found = False
+        is_stopped = False
+        target_pid = None
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                pname = proc.info['name']
+                if not pname or pname.lower() != game_basename.lower():
+                    continue
+                process_found = True
+                target_pid = proc.info['pid']
+                if proc.status() == psutil.STATUS_STOPPED:
+                    is_stopped = True
+                break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        if not process_found:
+            return  # 进程未运行，无需冻结/解冻
+        if is_stopped:
+            # 解冻
+            subprocess.Popen(
+                ['./_internal/pssuspend64.exe', '-r', game_basename],
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            self.frozen_games.discard(game_name)
+        else:
+            # 冻结：先尝试最小化游戏窗口
+            if target_pid is not None:
+                try:
+                    def _minimize_cb(hwnd, lParam):
+                        try:
+                            _, current_pid = win32process.GetWindowThreadProcessId(hwnd)
+                            if current_pid == target_pid:
+                                style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+                                if style & win32con.WS_VISIBLE:
+                                    ctypes.windll.user32.ShowWindow(hwnd, 6)  # 6=SW_MINIMIZE
+                        except Exception:
+                            pass
+                        return True  # 继续枚举
+                    win32gui.EnumWindows(_minimize_cb, None)
+                except Exception:
+                    pass
+            # 执行冻结
+            subprocess.Popen(
+                ['./_internal/pssuspend64.exe', game_basename],
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            self.frozen_games.add(game_name)
+        # 刷新界面以更新徽标
+        QTimer.singleShot(300, self.reload_interface)
+
     def sort_games(self):
         """根据收藏和最近游玩对游戏进行排序"""
         sorted_games = []
@@ -17317,11 +17439,11 @@ class SettingsWindow(QWidget):
         hint1.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint1)
 
-        # 行：回主页时尝试冻结游戏
-        self.freeze_button = QPushButton(
-            self.tr("回主页时尝试冻结游戏  %1").replace('%1', '开' if settings.get('freeze', False) else '关')
+        # 行：冻结相关功能（手动冻结/解冻）
+        self.freeze_features_button = QPushButton(
+            self.tr("冻结相关功能  %1").replace('%1', '开' if settings.get('freeze_features', False) else '关')
         )
-        self.freeze_button.setStyleSheet(f"""
+        self.freeze_features_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: transparent;
                 color: #ffffff;
@@ -17334,10 +17456,10 @@ class SettingsWindow(QWidget):
                 background-color: #3d3d3d;
             }}
         """)
-        self.freeze_button.clicked.connect(self.toggle_freeze)
-        layout.addWidget(self.freeze_button)
+        self.freeze_features_button.clicked.connect(self.toggle_freeze_features)
+        layout.addWidget(self.freeze_features_button)
 
-        hint2 = QLabel(self.tr("开启后按手柄主页键或快捷键时会尝试冻结全屏游戏进程，部分游戏无法冻结"))
+        hint2 = QLabel(self.tr("开启后主页游戏详情旁显示❄按钮，按手柄Back键或点击❄可冻结/解冻游戏"))
         hint2.setWordWrap(True)
         hint2.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint2)
@@ -17502,7 +17624,7 @@ class SettingsWindow(QWidget):
             self.restart_button,
             self.refresh_button,
             self.killexplorer_button,
-            self.freeze_button,
+            self.freeze_features_button,
             self.show_battery_button,
             self.open_folder_button,
             self.hotkey_row_button,
@@ -18461,6 +18583,31 @@ class SettingsWindow(QWidget):
         hint_ignore.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint_ignore)
 
+        # 行：回主页时尝试冻结游戏（从控制台页移入开发者选项）
+        self.freeze_button = QPushButton(
+            self.tr("回主页时尝试冻结游戏  %1").replace('%1', '开' if settings.get('freeze', False) else '关')
+        )
+        self.freeze_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(26 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+            }}
+        """)
+        self.freeze_button.clicked.connect(self.toggle_freeze)
+        layout.addWidget(self.freeze_button)
+
+        hint_freeze = QLabel(self.tr("开启后按手柄主页键或快捷键时会尝试冻结全屏游戏进程，部分游戏无法冻结"))
+        hint_freeze.setWordWrap(True)
+        hint_freeze.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
+        layout.addWidget(hint_freeze)
+
         layout.addStretch()
 
         self.focusable_widgets_developer = [
@@ -18468,6 +18615,7 @@ class SettingsWindow(QWidget):
             self.debug_window_button,
             self.disable_startup_animation_button,
             self.manage_ignored_apps_button,
+            self.freeze_button,
         ]
         return page
     def switch_category(self, key: str):
@@ -19116,6 +19264,18 @@ class SettingsWindow(QWidget):
         with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=4)
         self.parent().freeze = settings["freeze"]
+
+    def toggle_freeze_features(self):
+        """切换冻结相关功能（手动冻结/解冻）并保存设置"""
+        settings["freeze_features"] = not settings.get("freeze_features", False)
+        self.freeze_features_button.setText(self.tr("冻结相关功能 %1").replace('%1', '√' if settings['freeze_features'] else '×'))
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+        self.parent().freeze_features = settings["freeze_features"]
+        # 关闭功能时清除冻结状态并刷新界面
+        if not settings["freeze_features"]:
+            self.parent().frozen_games.clear()
+        self.parent().reload_interface()
 
     def toggle_show_battery(self):
         settings["show_battery"] = not settings.get("show_battery", False)
