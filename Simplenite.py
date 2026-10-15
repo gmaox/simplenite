@@ -9551,7 +9551,7 @@ class GameSelector(QWidget):
         self.keyboard_overlay.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowTransparentForInput)
         self.keyboard_overlay.setAttribute(Qt.WA_TranslucentBackground)
         self.keyboard_overlay.setWindowOpacity(0.9)
-        self.keyboard_overlay.setFixedSize(675, 370)
+        self.keyboard_overlay.setFixedSize(700, 430)
 
         # 居中于屏幕底部
         screen = QApplication.primaryScreen()
@@ -9574,9 +9574,45 @@ class GameSelector(QWidget):
         self.keyboard_widget.key_selected_callback = self.on_key_selected
         layout.addWidget(self.keyboard_widget)
 
-        self.selected_key_label = QLabel(self.tr("快速拉摇杆两次切摇杆外圈，R1/A输入选中项。X键空格，B键删除，L1键启用粘滞键，Y键F区"))
+        # 按键提示标签（始终显示，不被选中键覆盖）
+        self.hint_label = QLabel()
+        self.hint_label.setTextFormat(Qt.RichText)
+        self.hint_label.setAlignment(Qt.AlignCenter)
+        self.hint_label.setStyleSheet(
+            "font-size: 13px; color: #e8e8e8; padding: 6px 10px; "
+            "background: rgba(20,20,28,0.75); border: 1px solid rgba(100,180,255,0.35); "
+            "border-radius: 10px;"
+        )
+        hint_html = (
+            '<span style="color:#4ade80;">●</span> '
+            '<b style="color:#4ade80;">A</b> 输入 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#f87171;">●</span> '
+            '<b style="color:#f87171;">B</b> 收起 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#60a5fa;">●</span> '
+            '<b style="color:#60a5fa;">X</b> 删除 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#facc15;">●</span> '
+            '<b style="color:#facc15;">Y</b> 空格 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#c084fc;">●</span> '
+            '<b style="color:#c084fc;">L1</b> 粘滞 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#fb923c;">●</span> '
+            '<b style="color:#fb923c;">RT</b> F区 '
+            '<span style="color:#666;">&nbsp;|&nbsp;</span> '
+            '<span style="color:#94a3b8;">●</span> '
+            '<b style="color:#94a3b8;">Start</b> 收起'
+        )
+        self.hint_label.setText(hint_html)
+        layout.addWidget(self.hint_label)
+
+        # 选中键显示标签（仅显示当前选中的键，不覆盖提示）
+        self.selected_key_label = QLabel("")
         self.selected_key_label.setStyleSheet(
-            "font-size: 16px; color: white; font-weight: bold; padding: 5px; background: rgba(0,0,0,0.5);"
+            "font-size: 15px; color: #7dd3fc; font-weight: bold; padding: 2px; "
+            "background: transparent;"
         )
         self.selected_key_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.selected_key_label)
@@ -9601,6 +9637,7 @@ class GameSelector(QWidget):
         self._kb_last_b_pressed = [False, False]
         self._kb_last_y_pressed = [False, False]
         self._kb_last_lb_pressed = [False, False]
+        self._kb_last_rt_pressed = [False, False]
         self._kb_last_key_time = [0.0, 0.0]
         self._kb_last_fkey_move_time = 0
         # 保存窗口原始位置和位移状态
@@ -9697,7 +9734,8 @@ class GameSelector(QWidget):
                 lt_val = joystick.get_axis(4)
                 rt_val = joystick.get_axis(5)
                 a_pressed = True if lt_val > 0.1 else joystick.get_button(mapping.button_a)
-                b_pressed = True if rt_val > 0.1 else joystick.get_button(mapping.button_b)
+                b_pressed = joystick.get_button(mapping.button_b)  # B键不再由RT触发，RT独立用于F区
+                rt_pressed = rt_val > 0.5  # RT触发F区切换
                 y_pressed = joystick.get_button(mapping.button_y)
                 x_pressed = joystick.get_button(mapping.button_x)
                 start_pressed = joystick.get_button(mapping.start)
@@ -9725,6 +9763,8 @@ class GameSelector(QWidget):
                         self._kb_last_y_pressed.append(False)
                     while len(self._kb_last_lb_pressed) < extend_to:
                         self._kb_last_lb_pressed.append(False)
+                    while len(self._kb_last_rt_pressed) < extend_to:
+                        self._kb_last_rt_pressed.append(False)
                     while len(self._kb_last_key_time) < extend_to:
                         self._kb_last_key_time.append(0.0)
                     while len(self._kb_last_hat) < extend_to:
@@ -9773,16 +9813,15 @@ class GameSelector(QWidget):
 
                 self._kb_last_a_pressed[joystick_id] = a_pressed
 
-                # B 按键
+                # B 按键：收起键盘（原Start键功能），保留Start键关闭功能
                 if b_pressed and not self._kb_last_b_pressed[joystick_id]:
-                    pyautogui.keyDown('backspace')
-                if not b_pressed and self._kb_last_b_pressed[joystick_id]:
-                    pyautogui.keyUp('backspace')
+                    self.close_keyboard_overlay()
+                    return
                 self._kb_last_b_pressed[joystick_id] = b_pressed
 
-                # X = 空格
+                # X = 删除（backspace）
                 if x_pressed and not self._kb_last_x_pressed[joystick_id]:
-                    pyautogui.press('space')
+                    pyautogui.press('backspace')
 
                 self._kb_last_x_pressed[joystick_id] = x_pressed
 
@@ -9792,11 +9831,17 @@ class GameSelector(QWidget):
 
                 self._kb_last_lb_pressed[joystick_id] = lb_pressed
 
-                # Y = F区
+                # Y = 空格（space）
                 if y_pressed and not self._kb_last_y_pressed[joystick_id]:
-                    self.keyboard_widget.toggle_f_keys_mode()
+                    pyautogui.press('space')
 
                 self._kb_last_y_pressed[joystick_id] = y_pressed
+
+                # RT = F区功能
+                if rt_pressed and not self._kb_last_rt_pressed[joystick_id]:
+                    self.keyboard_widget.toggle_f_keys_mode()
+
+                self._kb_last_rt_pressed[joystick_id] = rt_pressed
 
                 # 退出键：Start 或 LS/RS/Guide
                 if start_pressed and time.time() > self._kb_ignore_start_until:
@@ -9921,7 +9966,7 @@ class GameSelector(QWidget):
         threshold = 0.2
         now = time.time()
         if abs(x_axis) > threshold:
-            if now - self._kb_last_fkey_move_time > 2:
+            if now - self._kb_last_fkey_move_time > 0.35:
                 if x_axis > 0:
                     self.keyboard_widget.move_f_keys_selection(1)
                 else:
@@ -12612,32 +12657,25 @@ class GameSelector(QWidget):
             else:
                 game_path = None
             if game_path:
-                game_basename = os.path.basename(game_path).lower()
-                for process in psutil.process_iter(['pid', 'name']):
-                    try:
-                        pname = process.info['name']
-                        if not pname or pname.lower() != game_basename:
-                            continue
-                        # 仅对同名进程调 exe() 比对完整路径，避免对全部进程调用 exe()
-                        if process.exe().lower() != game_path.lower():
-                            continue
-                        # 检查进程状态是否为挂起（Windows下为 'stopped'）
-                        if process.status() == psutil.STATUS_STOPPED:
-                            # 恢复挂起
-                            subprocess.Popen(
-                                ['./_internal/pssuspend64.exe', '-r', os.path.basename(game_path)],
-                                creationflags=subprocess.CREATE_NO_WINDOW
-                            )
-                            time.sleep(0.5)  # 等待恢复
-                            self.frozen_games.discard(game_name)  # 清除冻结标记
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                        continue
+                # 回到游戏前无条件按 PID 解冻：对未挂起进程是无害空操作。
+                # 重启后 frozen_games 为空、挂起状态识别可能失败，若进程仍挂起，
+                # 随后的 SetForegroundWindow 会让 GUI 线程死锁（表现为卡死）
+                pid = self._find_game_pid(game_path)
+                if pid is not None:
+                    was_suspended = self._is_pid_suspended(pid)
+                    subprocess.Popen(
+                        ['./_internal/pssuspend64.exe', '-r', str(pid)],
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    if was_suspended:
+                        time.sleep(0.5)  # 仅在确实挂起时等待恢复，避免常规情况增加延迟
+                self.frozen_games.discard(game_name)  # 清除冻结标记
         # 恢复窗口
         if game["name"] in self.player:
             for app in valid_apps:
                 if app["name"] == game["name"]:
                     game_path = app["path"]
-                    breakpoint
+                    break
             if not settings.get("skip_minimize_on_game_open", False):
                 self.hide_window()
             QTimer.singleShot(100, lambda: self.restore_window(game_path))
@@ -12749,33 +12787,24 @@ class GameSelector(QWidget):
                         if exe_name in pass_exe:
                             print(f"当前窗口 {exe_name} 在冻结列表中，跳过冻结")
                             return True
-                        # 仅当目标进程未挂起时才执行挂起
-                        is_stopped = False
-                        for proc in psutil.process_iter(['name']):
-                            try:
-                                pname = proc.info['name']
-                                if not pname or pname.lower() != exe_name.lower():
-                                    continue
-                                # 仅对同名进程调 status()，避免对全部进程调用 status()
-                                if proc.status() == psutil.STATUS_STOPPED:
-                                    is_stopped = True
-                                    break
-                            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                                continue
                         # 判断exe_path是否在valid_apps的path中
-                        found_in_valid_apps = False
+                        found_game_name = None
                         for app in valid_apps:
                             if exe_path and exe_path.lower() == app["path"].lower():
-                                found_in_valid_apps = True
+                                found_game_name = app["name"]
                                 break
-                        if not found_in_valid_apps:
+                        # 不在游戏库，或已冻结（含自身记录）时跳过挂起
+                        if found_game_name is None:
                             is_stopped = True
-
+                        else:
+                            is_stopped = self._is_pid_suspended(pid) or (found_game_name in self.frozen_games)
                         if not is_stopped:
+                            # 按 PID 挂起，避免进程名匹配失败导致部分游戏无法冻结
                             subprocess.Popen(
-                                ['./_internal/pssuspend64.exe', exe_name],
+                                ['./_internal/pssuspend64.exe', str(pid)],
                                 creationflags=subprocess.CREATE_NO_WINDOW
                             )
+                            self.frozen_games.add(found_game_name)
                     else:
                         QMessageBox.warning(self, self.tr("提示"), self.tr("未找到冻结工具，请检查路径"))
                 return True
@@ -13574,8 +13603,72 @@ class GameSelector(QWidget):
             return
         self._toggle_game_freeze(sorted_games[self.current_index]["name"])
 
+    def _find_game_pid(self, game_path):
+        """查找以指定 exe 路径运行的进程 PID（先按进程名粗筛，再比对完整路径）。"""
+        game_basename = os.path.basename(game_path).lower()
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    pname = proc.info['name']
+                    if not pname or pname.lower() != game_basename:
+                        continue
+                    if proc.exe().lower() == game_path.lower():
+                        return proc.info['pid']
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def _is_pid_suspended(self, pid):
+        """判断指定 PID 是否处于挂起（冻结）状态。"""
+        try:
+            return psutil.Process(pid).status() == psutil.STATUS_STOPPED
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+
+    def _enum_pid_windows(self, pid, action):
+        """枚举属于指定 PID 的可见窗口并对每个窗口执行 action(hwnd)。"""
+        try:
+            def _cb(hwnd, lParam):
+                try:
+                    _, current_pid = win32process.GetWindowThreadProcessId(hwnd)
+                    if current_pid == pid:
+                        style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+                        if style & win32con.WS_VISIBLE:
+                            action(hwnd)
+                except Exception:
+                    pass
+                return True
+            win32gui.EnumWindows(_cb, None)
+        except Exception:
+            pass
+
+    def _minimize_pid_windows(self, pid):
+        """最小化指定 PID 的窗口。"""
+        self._enum_pid_windows(pid, lambda hwnd: ctypes.windll.user32.ShowWindow(hwnd, 6))  # SW_MINIMIZE
+
+    def _restore_pid_windows(self, pid):
+        """恢复（取消最小化）指定 PID 的窗口。"""
+        def _restore(hwnd):
+            try:
+                if win32gui.IsIconic(hwnd):
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            except Exception:
+                pass
+        self._enum_pid_windows(pid, _restore)
+
+    def _suspend_pid(self, pid):
+        """按 PID 挂起进程（延迟执行，确保窗口已最小化）。"""
+        if not os.path.exists("./_internal/pssuspend64.exe"):
+            return
+        subprocess.Popen(
+            ['./_internal/pssuspend64.exe', str(pid)],
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+
     def _toggle_game_freeze(self, game_name):
-        """冻结/解冻指定游戏（手动切换）。冻结时加入 frozen_games，解冻时移除。"""
+        """冻结/解冻指定游戏（手动切换）。始终按 PID 操作，避免进程名匹配失败。"""
         if not os.path.exists("./_internal/pssuspend64.exe"):
             return
         # 查找游戏 exe 路径
@@ -13586,57 +13679,26 @@ class GameSelector(QWidget):
                 break
         if not game_path:
             return
-        game_basename = os.path.basename(game_path)
-        # 检查进程是否在运行且是否已冻结
-        process_found = False
-        is_stopped = False
-        target_pid = None
-        for proc in psutil.process_iter(['pid', 'name']):
-            try:
-                pname = proc.info['name']
-                if not pname or pname.lower() != game_basename.lower():
-                    continue
-                process_found = True
-                target_pid = proc.info['pid']
-                if proc.status() == psutil.STATUS_STOPPED:
-                    is_stopped = True
-                break
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-        if not process_found:
+        pid = self._find_game_pid(game_path)
+        if pid is None:
             return  # 进程未运行，无需冻结/解冻
-        if is_stopped:
-            # 解冻
+        # 判断当前状态：优先用自身记录，其次用系统挂起状态（避免识别失败导致重复冻结）
+        is_frozen = (game_name in self.frozen_games) or self._is_pid_suspended(pid)
+        if is_frozen:
+            # 解冻：先恢复挂起，再恢复窗口
             subprocess.Popen(
-                ['./_internal/pssuspend64.exe', '-r', game_basename],
+                ['./_internal/pssuspend64.exe', '-r', str(pid)],
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             self.frozen_games.discard(game_name)
+            QTimer.singleShot(300, lambda p=pid: self._restore_pid_windows(p))
         else:
-            # 冻结：先尝试最小化游戏窗口
-            if target_pid is not None:
-                try:
-                    def _minimize_cb(hwnd, lParam):
-                        try:
-                            _, current_pid = win32process.GetWindowThreadProcessId(hwnd)
-                            if current_pid == target_pid:
-                                style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
-                                if style & win32con.WS_VISIBLE:
-                                    ctypes.windll.user32.ShowWindow(hwnd, 6)  # 6=SW_MINIMIZE
-                        except Exception:
-                            pass
-                        return True  # 继续枚举
-                    win32gui.EnumWindows(_minimize_cb, None)
-                except Exception:
-                    pass
-            # 执行冻结
-            subprocess.Popen(
-                ['./_internal/pssuspend64.exe', game_basename],
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
+            # 冻结：立即记录状态并最小化窗口，等待生效后再挂起进程
             self.frozen_games.add(game_name)
+            self._minimize_pid_windows(pid)
+            QTimer.singleShot(300, lambda p=pid: self._suspend_pid(p))
         # 刷新界面以更新徽标
-        QTimer.singleShot(300, self.reload_interface)
+        QTimer.singleShot(700, self.reload_interface)
 
     def sort_games(self):
         """根据收藏和最近游玩对游戏进行排序"""
@@ -14437,9 +14499,9 @@ class GameSelector(QWidget):
             ly = self.left_joystick_state.get('y', 0.0)
             ux, uy = circle_to_square_progress(lx, ly)
             end_left = QPoint(int(center_left.x() + ux * max_x), int(center_left.y() + uy * max_y))
-            painter.setPen(QPen(QColor(120, 120, 120), 4))
+            painter.setPen(QPen(QColor(80, 160, 255), 4))
             painter.drawLine(center_left, end_left)
-            painter.setBrush(QBrush(QColor(120, 120, 120)))
+            painter.setBrush(QBrush(QColor(80, 160, 255)))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(end_left, 6, 6)
             center_right = QPoint(482, 172)
@@ -14447,9 +14509,9 @@ class GameSelector(QWidget):
             ry = self.right_joystick_state.get('y', 0.0)
             ux, uy = circle_to_square_progress(rx, ry)
             end_right = QPoint(int(center_right.x() + ux * max_x), int(center_right.y() + uy * max_y))
-            painter.setPen(QPen(QColor(120, 120, 120), 4))
+            painter.setPen(QPen(QColor(80, 160, 255), 4))
             painter.drawLine(center_right, end_right)
-            painter.setBrush(QBrush(QColor(120, 120, 120)))
+            painter.setBrush(QBrush(QColor(80, 160, 255)))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(end_right, 6, 6)
         def update_active_key(self, key):
@@ -14503,7 +14565,13 @@ class GameSelector(QWidget):
                 print(f"手柄 {i} 已连接: {joy.get_name()}")
             while self.running:
                 sdl_gamepad.event.pump()
-                for i, joystick in enumerate(self.joysticks):
+                # 修复：只读取第一个手柄（索引 0）的轴值。
+                # 原代码遍历所有手柄并发射相同的 joystick_id（0=左摇杆, 1=右摇杆），
+                # 导致多手柄环境下状态互相覆盖——若第二个手柄左摇杆有中心偏移，
+                # _kb_left_state.radius 被覆盖为较大值，使左摇杆 zone 始终判为 outer。
+                # 当前键盘覆盖层使用单一 mapping，设计上只支持一个手柄，故取第一个。
+                if self.joysticks:
+                    joystick = self.joysticks[0]
                     left_x = joystick.get_axis(0)
                     left_y = joystick.get_axis(1)
                     right_x = joystick.get_axis(2)
