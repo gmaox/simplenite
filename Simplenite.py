@@ -7689,94 +7689,59 @@ class GameSelector(QWidget):
         self.right_layout = QHBoxLayout()
         self.right_layout.setAlignment(Qt.AlignRight)
 
-        # 创建计时器用于控制按钮显示时间
-        self.button_timer = QTimer(self)
-        self.button_timer.setSingleShot(True)
-        self.button_timer.timeout.connect(self.hide_all_buttons)
-
-        # 按钮原始文本
-        self.button_texts = {
-            'more': self.tr('工具'),
-            'favorite': self.tr('收藏'),
-            'quit': self.tr('最小化'),
-            'screenshot': self.tr('游戏详情')
-        }
         # 创建更多按钮
-        self.more_button = QPushButton("*")
-        self.more_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-        self.more_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """)
-        self.more_button.clicked.connect(self.on_button_clicked)
+        self.more_button = QPushButton("☰")
         self.more_button.clicked.connect(self.show_more_window)
 
         # 添加收藏按钮
-        self.favorite_button = QPushButton("*")
-        self.favorite_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-        self.favorite_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """)
-        self.favorite_button.clicked.connect(self.on_button_clicked)
+        self.favorite_button = QPushButton("☆")
         self.favorite_button.clicked.connect(self.on_favorite_button_clicked)
 
         # 创建退出按钮
-        self.quit_button = QPushButton("*")
-        self.quit_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-        self.quit_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """)
-        self.quit_button.clicked.connect(self.on_button_clicked)
+        self.quit_button = QPushButton("✕")
         self.quit_button.clicked.connect(self.exitbutton)
 
         # 新增：截图按钮
-        self.screenshot_button = QPushButton("*")
-        self.screenshot_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-        self.screenshot_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """)
-        self.screenshot_button.clicked.connect(self.on_button_clicked)
+        self.screenshot_button = QPushButton("i")
         self.screenshot_button.clicked.connect(self.open_selected_game_screenshot)
 
+        # 新增：最小化按钮（真最小化到任务栏）
+        self.min_button = QPushButton("─")
+        self.min_button.clicked.connect(self.minimize_window)
+
         # 新增：冻结按钮（冻结相关功能开启时显示，在游戏详情按钮右侧）
-        self.freeze_button = QPushButton(" ❄ ")
-        self.freeze_button.setFixedSize(int(40 * self.scale_factor), int(40 * self.scale_factor))
-        self.freeze_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border-radius: {int(20 * self.scale_factor)}px;
-                border: none;
-                color: #888888;
-                font-size: {int(14 * self.scale_factor)}px;
-            }}
-        """)
-        self.freeze_button.clicked.connect(self.on_button_clicked)
+        self.freeze_button = QPushButton("❄")
         self.freeze_button.clicked.connect(self._on_freeze_button_clicked)
         # 默认隐藏，仅当冻结相关功能开启且当前游戏运行中时显示
         self.freeze_button.setVisible(False)
+
+        # 顶部功能按钮统一风格
+        top_btn_style = f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: #cccccc;
+                font-size: {int(16 * self.scale_factor)}px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.18);
+            }}
+        """
+        # 左侧停靠按钮统一2倍宽度
+        for btn in (self.more_button, self.screenshot_button, self.freeze_button):
+            btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(top_btn_style)
+        for btn in (self.favorite_button, self.min_button, self.quit_button):
+            btn.setFixedSize(int(69 * self.scale_factor), int(45 * self.scale_factor))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(top_btn_style)
+        self.quit_button.setStyleSheet(top_btn_style + """
+            QPushButton:hover {
+                background-color: #e81123;
+                color: white;
+            }
+        """)
 
         # 创建游戏标题标签
         sorted_games = self.sort_games()
@@ -7812,6 +7777,7 @@ class GameSelector(QWidget):
         # 将按钮和标签添加到对应的布局
         self.left_layout.addWidget(self.more_button)
         self.center_layout.addWidget(self.game_name_label)
+        self.right_layout.addWidget(self.min_button)
         self.right_layout.addWidget(self.quit_button)
 
         # 设置定时器每秒更新一次时间
@@ -9074,7 +9040,11 @@ class GameSelector(QWidget):
         self.screenshot_window.show()
     def update_time(self):
         """更新时间显示"""
-        current_time = QDateTime.currentDateTime().toString(" HH : mm   dddd")
+        # 不显示电量时附加星期（dddd）
+        if settings.get("show_battery", False):
+            current_time = QDateTime.currentDateTime().toString(" HH : mm")
+        else:
+            current_time = QDateTime.currentDateTime().toString(" HH : mm   dddd")
         # 判断网络状态
         is_connected = ctypes.windll.wininet.InternetGetConnectedState(None, 0)
         network_status = "🛜" if is_connected else "✈️"
@@ -9302,61 +9272,6 @@ class GameSelector(QWidget):
         else:
             self.hide_window()
 
-    def on_button_clicked(self):
-        """按钮点击事件处理"""
-        # 显示所有按钮的原始文本和边框
-        self.more_button.setText(self.button_texts['more'])
-        self.favorite_button.setText(self.button_texts['favorite'])
-        self.quit_button.setText(self.button_texts['quit'])
-        self.screenshot_button.setText(self.button_texts['screenshot'])
-        
-        # 为所有按钮设置显示样式
-        button_style = f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: {int(2 * self.scale_factor)}px solid #888888;
-                color: white;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-            QPushButton:hover {{
-                border: {int(2 * self.scale_factor)}px solid #555555;
-            }}
-        """
-        
-        self.more_button.setStyleSheet(button_style)
-        self.favorite_button.setStyleSheet(button_style)
-        self.quit_button.setStyleSheet(button_style)
-        self.screenshot_button.setStyleSheet(button_style)
-        
-        # 重启计时器
-        self.button_timer.stop()
-        self.button_timer.start(4000)  # 4秒后隐藏
-
-    def hide_all_buttons(self):
-        """隐藏所有按钮的边框并显示灰色横杠"""
-        # 隐藏所有按钮的边框并显示灰色横杠
-        self.more_button.setText("*")
-        self.favorite_button.setText("*")
-        self.quit_button.setText("*")
-        self.screenshot_button.setText("*")
-        
-        # 为所有按钮设置隐藏样式
-        hidden_style = f"""
-            QPushButton {{
-                background-color: transparent; 
-                border-radius: {int(20 * self.scale_factor)}px; 
-                border: none;
-                color: #888888;
-                font-size: {int(16 * self.scale_factor)}px;
-            }}
-        """
-        
-        self.more_button.setStyleSheet(hidden_style)
-        self.favorite_button.setStyleSheet(hidden_style)
-        self.quit_button.setStyleSheet(hidden_style)
-        self.screenshot_button.setStyleSheet(hidden_style)
-
     def hide_window(self):
         """隐藏窗口"""
         # 创建淡出动画
@@ -9393,6 +9308,35 @@ class GameSelector(QWidget):
 
         self._hide_anim.finished.connect(on_finished)
         self._hide_anim.start()
+    def minimize_window(self):
+        """真最小化到任务栏（带淡出动画）"""
+        # 创建淡出动画
+        self._min_anim = QPropertyAnimation(self, b"windowOpacity", self)
+        self._min_anim.setStartValue(self.windowOpacity())
+        self._min_anim.setEndValue(0.0)  # 透明度为0
+        self._min_anim.setDuration(200)  # 200ms
+        try:
+            from PyQt5.QtCore import QEasingCurve
+            self._min_anim.setEasingCurve(QEasingCurve.InCubic)
+        except Exception:
+            pass
+
+        def on_finished():
+            hwnd = int(self.winId())
+            ctypes.windll.user32.ShowWindow(hwnd, 6)  # 6=SW_MINIMIZE
+            # 恢复透明度
+            self.setWindowOpacity(1.0)
+            # 窗口已隐藏：降速后台轮询 + 停止时钟刷新
+            self.monitor_thread.set_ui_visible(False)
+            self.controller_thread.set_ui_visible(False)
+            try:
+                self.time_timer.stop()
+            except Exception:
+                pass
+
+        self._min_anim.finished.connect(on_finished)
+        self._min_anim.start()
+
     def on_favorite_button_clicked(self):
         if getattr(self, 'current_section', 0) == 1 and getattr(self, 'more_section', 0) == 0:
             idx = getattr(self, 'current_index', 0)
@@ -10800,6 +10744,22 @@ class GameSelector(QWidget):
                     self._refresh_save_path_buttons(self.tr("所有软件"))
                 except Exception:
                     pass
+                # 收藏按钮恢复为☆
+                try:
+                    self.favorite_button.setText("☆")
+                    self.favorite_button.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: transparent;
+                            border: none;
+                            color: #cccccc;
+                            font-size: {int(16 * self.scale_factor)}px;
+                        }}
+                        QPushButton:hover {{
+                            background-color: rgba(255, 255, 255, 0.18);
+                        }}
+                    """)
+                except Exception:
+                    pass
             else:
                 _cur_game_name = sorted_games[self.current_index]["name"]
                 self.game_name_label.setText(_cur_game_name)
@@ -10823,21 +10783,38 @@ class GameSelector(QWidget):
                 except Exception:
                     pass
 
-                # 更新 favorite_button 的原始文本（存储在字典中）
-                if is_running:
-                    self.button_texts['favorite'] = self.tr("结束进程")
-                else:
-                    self.button_texts['favorite'] = self.tr("收藏")
-                
-                # 确保按钮在未点击时显示为灰色横杠
-                if self.favorite_button.text() == "*":
-                    # 保持灰色横杠状态
+                # 收藏按钮：当前游戏运行中时显示红色◉，否则显示★
+                try:
+                    if is_running:
+                        self.favorite_button.setText("◉")
+                        self.favorite_button.setStyleSheet(f"""
+                            QPushButton {{
+                                background-color: transparent;
+                                border: none;
+                                color: #ff4b4b;
+                                font-size: {int(16 * self.scale_factor)}px;
+                            }}
+                            QPushButton:hover {{
+                                background-color: rgba(255, 255, 255, 0.18);
+                            }}
+                        """)
+                    else:
+                        self.favorite_button.setText("☆")
+                        self.favorite_button.setStyleSheet(f"""
+                            QPushButton {{
+                                background-color: transparent;
+                                border: none;
+                                color: #cccccc;
+                                font-size: {int(16 * self.scale_factor)}px;
+                            }}
+                            QPushButton:hover {{
+                                background-color: rgba(255, 255, 255, 0.18);
+                            }}
+                        """)
+                except Exception:
                     pass
-                else:
-                    # 如果按钮当前显示的是文本，则更新为正确的文本
-                    self.favorite_button.setText(self.button_texts['favorite'])
 
-        if self.current_section == 0: 
+        if self.current_section == 0:
             for index, button in enumerate(self.buttons):
                 if index == self.current_index:
                     if self.gsfocus():
@@ -11504,7 +11481,13 @@ class GameSelector(QWidget):
             # 使用 Windows 图标缓存
             result = ctypes.windll.shell32.ExtractIconW(None, exe_path, 0)
             if result:
-                # 将句柄转换为 QPixmap（这比较复杂，通常不推荐）
+                # 句柄无法直接转 QPixmap，但必须立即销毁：
+                # HICON 是 USER 句柄，不销毁每次调用泄漏一个，最终会耗尽
+                # 每进程 10000 个 USER 句柄配额（QTimer 创建失败报错）
+                try:
+                    ctypes.windll.user32.DestroyIcon(result)
+                except Exception:
+                    pass
                 return QIcon()
         except Exception:
             pass
@@ -13820,56 +13803,34 @@ class GameSelector(QWidget):
         self.scale_factor2 = self.scale_factor * 2
         
         # 更新顶部按钮
-        if hasattr(self, 'more_button'):
-            self.more_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-            self.more_button.setText("*")
-            self.more_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent; 
-                    border-radius: {int(20 * self.scale_factor)}px; 
-                    border: none;
-                    color: #888888;
-                    font-size: {int(16 * self.scale_factor)}px;
-                }}
-            """)
-        
-        if hasattr(self, 'favorite_button'):
-            self.favorite_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-            self.favorite_button.setText("*")
-            self.favorite_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent; 
-                    border-radius: {int(20 * self.scale_factor)}px; 
-                    border: none;
-                    color: #888888;
-                    font-size: {int(16 * self.scale_factor)}px;
-                }}
-            """)
-        
+        top_btn_style = f"""
+            QPushButton {{
+                background-color: transparent;
+                border: none;
+                color: #cccccc;
+                font-size: {int(16 * self.scale_factor)}px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.18);
+            }}
+        """
+        # 左侧停靠按钮统一2倍宽度
+        for btn_name in ('more_button', 'screenshot_button', 'freeze_button'):
+            if hasattr(self, btn_name):
+                btn = getattr(self, btn_name)
+                btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
+                btn.setStyleSheet(top_btn_style)
+        for btn_name in ('favorite_button', 'min_button', 'quit_button'):
+            if hasattr(self, btn_name):
+                btn = getattr(self, btn_name)
+                btn.setFixedSize(int(69 * self.scale_factor), int(45 * self.scale_factor))
+                btn.setStyleSheet(top_btn_style)
         if hasattr(self, 'quit_button'):
-            self.quit_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-            self.quit_button.setText("*")
-            self.quit_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent; 
-                    border-radius: {int(20 * self.scale_factor)}px; 
-                    border: none;
-                    color: #888888;
-                    font-size: {int(16 * self.scale_factor)}px;
-                }}
-            """)
-        
-        if hasattr(self, 'screenshot_button'):
-            self.screenshot_button.setFixedSize(int(120 * self.scale_factor), int(40 * self.scale_factor))
-            self.screenshot_button.setText("*")
-            self.screenshot_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent; 
-                    border-radius: {int(20 * self.scale_factor)}px; 
-                    border: none;
-                    color: #888888;
-                    font-size: {int(16 * self.scale_factor)}px;
-                }}
+            self.quit_button.setStyleSheet(top_btn_style + """
+                QPushButton:hover {
+                    background-color: #e81123;
+                    color: white;
+                }
             """)
         
         # 更新游戏名标签和时间标签
@@ -14092,16 +14053,6 @@ class GameSelector(QWidget):
             if widget:
                 widget.setParent(None)
         self.buttons.clear()
-        if self.more_section == 1:
-            #修改按钮文字为"返回"
-            self.button_texts['quit'] = self.tr("返回主页面")
-        else:
-            self.button_texts['quit'] = self.tr("最小化")
-        
-        # 确保按钮在未点击时显示为灰色横杠
-        if self.quit_button.text() != "*":
-            # 如果按钮当前显示的是文本，则更新为正确的文本
-            self.quit_button.setText(self.button_texts['quit'])
         # 重新添加按钮
         sorted_games = self.sort_games()
         self._no_games_mode = not bool(sorted_games)  # 标记无游戏状态，用于手柄路由
@@ -19767,16 +19718,51 @@ if __name__ == "__main__":
     current_pid = os.getpid()
     our_exe = sys.executable
     our_name = os.path.basename(our_exe).lower()
+    # 脚本模式下 sys.executable 是 python.exe，所有同解释器的进程 exe 都相同，
+    # 必须再比对命令行中的脚本路径，否则会误杀无关 Python 进程
+    script_path = os.path.abspath(__file__).lower()
+    is_frozen = getattr(sys, "frozen", False)
+    print(f"[启动诊断] 重复运行检查开始 our_exe={our_exe}", flush=True)
     for proc in psutil.process_iter(['pid', 'name']):
         try:
             if proc.info['pid'] == current_pid:
                 continue
-            if proc.info['name'] and proc.info['name'].lower() == our_name:
-                if proc.exe() == our_exe:
-                    proc.terminate()
-                    proc.wait()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            if not (proc.info['name'] and proc.info['name'].lower() == our_name):
+                continue
+            # 判定是否为本程序进程
+            is_ours = False
+            if is_frozen:
+                is_ours = (proc.exe() == our_exe)
+            else:
+                try:
+                    cmdline = [str(a).lower() for a in (proc.cmdline() or [])]
+                    is_ours = any(script_path in a for a in cmdline)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            if not is_ours:
+                continue
+            print(f"[启动诊断] 发现本程序残留进程 pid={proc.info['pid']}，准备 terminate", flush=True)
+            try:
+                proc.terminate()
+                print(f"[启动诊断] 已 terminate，等待 pid={proc.info['pid']} 退出（最多5秒）...", flush=True)
+                try:
+                    proc.wait(timeout=5)
+                    print(f"[启动诊断] pid={proc.info['pid']} 已退出", flush=True)
+                except psutil.TimeoutExpired:
+                    print(f"[启动诊断] pid={proc.info['pid']} 未响应 terminate，尝试 kill", flush=True)
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                        print(f"[启动诊断] pid={proc.info['pid']} 已被 kill", flush=True)
+                    except psutil.TimeoutExpired:
+                        # 杀不掉也不阻塞启动：残留进程不影响新实例运行
+                        print(f"[启动诊断] pid={proc.info['pid']} kill 超时，放弃等待，继续启动", flush=True)
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                print(f"[启动诊断] terminate pid={proc.info['pid']} 失败: {e}，跳过", flush=True)
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
+    print("[启动诊断] 重复运行检查完成", flush=True)
     app = QApplication(sys.argv)
     selector = GameSelector()
     selector.show()
