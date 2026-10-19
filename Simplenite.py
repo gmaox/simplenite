@@ -25,7 +25,7 @@ from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, pyqtSlot, QT
 import subprocess, time, os,win32con, ctypes, re, win32com.client, ctypes, time, pyautogui
 from ctypes import wintypes
 
-APP_VERSION = "0.97.4"
+APP_VERSION = "0.97.5"
 
 #& C:/Users/86150/AppData/Local/Programs/Python/Python38/python.exe -m PyInstaller --add-data "fav.ico;." --add-data '1.png;.' --add-data 'pssuspend64.exe;.' -w Simplenite.py -i '.\fav.ico' --uac-admin --noconfirm
 # 定义 Windows API 函数
@@ -650,40 +650,70 @@ def get_screen_rect():
     user32 = ctypes.windll.user32
     return (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
 
+def get_taskbar_pos():
+    """通过 SHAppBarMessage(ABM_GETTASKBARPOS) 获取任务栏在 shell 中注册的位置。
+
+    任务栏被隐藏（SW_HIDE）或工作区被修改后，GetWindowRect 可能返回被 shell
+    移动过的矩形；appbar 注册位置不受影响，是计算正常工作区的可靠来源。
+    返回 (edge, rc)：edge ∈ {0:左, 1:上, 2:右, 3:下}，失败返回 (None, None)。
+    """
+    class APPBARDATA(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.wintypes.DWORD),
+            ("hWnd", ctypes.wintypes.HWND),
+            ("uCallbackMessage", ctypes.wintypes.UINT),
+            ("uEdge", ctypes.wintypes.UINT),
+            ("rc", ctypes.wintypes.RECT),
+            ("lParam", ctypes.wintypes.LPARAM),
+        ]
+    try:
+        abd = APPBARDATA()
+        abd.cbSize = ctypes.sizeof(APPBARDATA)
+        if ctypes.windll.shell32.SHAppBarMessage(0x0004, ctypes.byref(abd)):  # ABM_GETTASKBARPOS
+            return abd.uEdge, abd.rc
+    except Exception:
+        pass
+    return None, None
+
 # 获取当前的工作区域（最大化时的边界）
 def get_work_area():
-    # 获取整个屏幕区域
     user32 = ctypes.windll.user32
-    screen_rect = (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
-    # 获取任务栏窗口句柄
+    sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    # 优先使用 shell 注册的任务栏位置（任务栏隐藏时窗口矩形不可靠）
+    edge, rc = get_taskbar_pos()
+    if rc is not None:
+        if edge == 1:   # ABE_TOP
+            return (0, rc.bottom, sw, sh)
+        if edge == 3:   # ABE_BOTTOM
+            return (0, 0, sw, rc.top)
+        if edge == 0:   # ABE_LEFT
+            return (rc.right, 0, sw, sh)
+        if edge == 2:   # ABE_RIGHT
+            return (0, 0, rc.left, sh)
+    # 回退：任务栏窗口矩形（旧算法）
     taskbar = win32gui.FindWindow("Shell_TrayWnd", None)
     if not taskbar:
-        return screen_rect
-    # 获取任务栏位置和大小
+        return (0, 0, sw, sh)
     rect = win32gui.GetWindowRect(taskbar)
-    # 判断任务栏在屏幕的哪一边
     left, top, right, bottom = rect
-    sw, sh = screen_rect[2], screen_rect[3]
-    # 默认工作区为全屏
-    work_left, work_top, work_right, work_bottom = 0, 0, sw, sh
-    # 判断任务栏位置
     if left <= 0 and right >= sw:  # 顶部或底部
         if top == 0:
-            work_top = bottom  # 任务栏在顶部
-        else:
-            work_bottom = top  # 任务栏在底部
-    elif top <= 0 and bottom >= sh:  # 左侧或右侧
+            return (0, bottom, sw, sh)
+        return (0, 0, sw, top)
+    if top <= 0 and bottom >= sh:  # 左侧或右侧
         if left == 0:
-            work_left = right  # 任务栏在左侧
-        else:
-            work_right = left  # 任务栏在右侧
-    return (work_left, work_top, work_right, work_bottom)
+            return (right, 0, sw, sh)
+        return (0, 0, left, sh)
+    return (0, 0, sw, sh)
 
 # 设置工作区域
-def set_work_area(left, top, right, bottom):
+def set_work_area(left, top, right, bottom, broadcast=True):
     SPI_SETWORKAREA = 0x002F
     rect = ctypes.wintypes.RECT(left, top, right, bottom)
-    res = ctypes.windll.user32.SystemParametersInfoW(SPI_SETWORKAREA, 0, ctypes.byref(rect), 1)
+    # broadcast=True: SPIF_UPDATEINIFILE|SPIF_SENDCHANGE(3)，通知 shell 立即采用（用于回桌面还原）；
+    # broadcast=False: 仅写注册表(1)。注意 SENDCHANGE 会触发 explorer 按其内部注册的
+    # 任务栏矩形重算并覆盖写入，因此沉浸全屏必须用非广播写入才能保持 1200 不被回写
+    res = ctypes.windll.user32.SystemParametersInfoW(SPI_SETWORKAREA, 0, ctypes.byref(rect), 3 if broadcast else 1)
     return res != 0
 
 
@@ -940,199 +970,6 @@ def _install_debug_output_redirect():
     sys.stderr = _stderr_stream
 
 
-class TaskbarWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.Tool |
-            Qt.WindowStaysOnBottomHint |
-            Qt.WindowDoesNotAcceptFocus
-        )
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnBottomHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowOpacity(0.7)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #2E2E2E;
-                border: 1px solid #222;
-            }
-            QLabel {
-                color: #CCCCCC;
-                font-size: 22px;
-            }
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #aaa, stop:1 #888);
-                border: 1px solid #222;
-                font-size: 26px;
-                min-width: 120px;
-                min-height: 60px;
-            }
-            QPushButton:hover {
-                background: #bbb;
-            }
-            QSlider::groove:horizontal {
-                height: 10px;
-                border: 1px solid #666;
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #999, stop:1 #666
-                );
-                border-radius: 5px;
-            }
-            QSlider::handle:horizontal {
-                background: #ffffff;
-                border: 2px solid #000;
-                width: 14px;
-                height: 14px;
-                margin: -5px 0;
-                border-radius: 7px;
-            }
-        """)
-        def get_desktop_parent():
-            progman = win32gui.FindWindow("Progman", None)
-            defview = win32gui.FindWindowEx(progman, 0, "SHELLDLL_DefView", None)
-            if defview:
-                return defview
-            # 查找WorkerW
-            result = []
-            def callback(hwnd, result):
-                if win32gui.GetClassName(hwnd) == "WorkerW":
-                    child = win32gui.FindWindowEx(hwnd, 0, "SHELLDLL_DefView", None)
-                    if child:
-                        result.append(child)
-            win32gui.EnumWindows(callback, result)
-            if result:
-                return result[0]
-            return win32gui.GetDesktopWindow()
-        desktop_parent = get_desktop_parent()
-        self.winId()  # 确保窗口已创建
-        ctypes.windll.user32.SetParent(int(self.winId()), desktop_parent)
-        # taskbar = win32gui.FindWindow("Shell_TrayWnd", None)
-        # rect = win32gui.GetWindowRect(taskbar)
-        # taskbar_height = rect[3] - rect[1]
-        # taskbar_width = rect[2] - rect[0]
-        # self.resize(taskbar_width, taskbar_height)
-        # self.move(rect[0], rect[1])
-        screen = QApplication.primaryScreen().geometry()
-        # 让主窗口全屏
-        self.setGeometry(0, 0, screen.width(), screen.height())
-        self.setWindowOpacity(0.9)
-
-        # 主部件和布局
-        central = QWidget(self)
-        self.setCentralWidget(central)
-        layout = QHBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        # 创建一个居中容器用于放置按钮
-        btn_container = QWidget(self.centralWidget())
-        btn_layout = QHBoxLayout(btn_container)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(10)
-
-        # 回到桌面按钮
-        btn_desktop = QPushButton(self.tr("🖥️回到桌面"), self)
-        btn_desktop.setStyleSheet("font-size: 15px;")
-        btn_desktop.clicked.connect(self.on_back_to_desktop)
-        btn_layout.addWidget(btn_desktop)
-
-        # Win+Tab按钮
-        btn_wintab = QPushButton(self.tr("🗒️任务视图"), self)
-        btn_wintab.setStyleSheet("font-size: 15px;")
-        btn_wintab.clicked.connect(self.on_win_tab)
-        btn_layout.addWidget(btn_wintab)
-
-        # 打开资源管理器按钮
-        btn_explorer = QPushButton(self.tr("📦️打开前端"), self)
-        btn_explorer.setStyleSheet("font-size: 15px;")
-        btn_explorer.clicked.connect(self.on_open_dgmix)
-        btn_layout.addWidget(btn_explorer)
-
-        # 将按钮容器添加到主布局并居中
-        layout.addWidget(btn_container, alignment=Qt.AlignCenter)
-
-        # 全屏隐藏按钮（中空，四个区域覆盖，按钮区域不覆盖）
-        self.btn_hide_top = QPushButton("", self)
-        self.btn_hide_top.setStyleSheet("background: rgba(0,0,0,0.01); border: none;")
-        self.btn_hide_top.clicked.connect(self.on_hide_all)
-        self.btn_hide_top.setVisible(True)
-
-        self.btn_hide_bottom = QPushButton("", self)
-        self.btn_hide_bottom.setStyleSheet("background: rgba(0,0,0,0.01); border: none;")
-        self.btn_hide_bottom.clicked.connect(self.on_hide_all)
-        self.btn_hide_bottom.setVisible(True)
-
-        self.btn_hide_left = QPushButton("", self)
-        self.btn_hide_left.setStyleSheet("background: rgba(0,0,0,0.01); border: none;")
-        self.btn_hide_left.clicked.connect(self.on_hide_all)
-        self.btn_hide_left.setVisible(True)
-
-        self.btn_hide_right = QPushButton("", self)
-        self.btn_hide_right.setStyleSheet("background: rgba(0,0,0,0.01); border: none;")
-        self.btn_hide_right.clicked.connect(self.on_hide_all)
-        self.btn_hide_right.setVisible(True)
-
-        # 跟随窗口和btn_container大小变化调整隐藏按钮大小和位置
-        self.resizeEvent = self._resizeEvent
-
-        # 重写show方法，在显示窗口时执行相关代码
-        old_show = self.show
-        def new_show():
-            # 获取屏幕工作区，保存供恢复
-            self._original_work_area = get_work_area()
-            screen_rect = get_screen_rect()
-            set_work_area(*screen_rect)
-            old_show()
-        self.show = new_show
-
-    def _resizeEvent(self, event):
-        # 获取btn_container的几何信息
-        btn_container = self.centralWidget().findChild(QWidget)
-        if btn_container:
-            # 重新计算中间空白区域的位置和大小
-            screen = QApplication.primaryScreen().geometry()
-            width = int(screen.width() * 0.33)
-            height = int(screen.height() * 0.1)
-            x = (screen.width() - width) // 2
-            y = (screen.height() - height) // 2
-            btn_container.setGeometry(x, y, width, height)
-            btn_container.setFixedSize(width, height)
-            c_geo = btn_container.geometry()
-            # 顶部按钮
-            self.btn_hide_top.setGeometry(
-                0, 0, self.width(), c_geo.top()
-            )
-            # 底部按钮
-            self.btn_hide_bottom.setGeometry(
-                0, c_geo.bottom() + 1, self.width(), self.height() - c_geo.bottom() - 1
-            )
-            # 左侧按钮
-            self.btn_hide_left.setGeometry(
-                0, c_geo.top(), c_geo.left(), c_geo.height()
-            )
-            # 右侧按钮
-            self.btn_hide_right.setGeometry(
-                c_geo.right() + 1, c_geo.top(), self.width() - c_geo.right() - 1, c_geo.height()
-            )
-        if hasattr(super(), 'resizeEvent'):
-            super().resizeEvent(event)
-    def on_back_to_desktop(self):
-        show_desktop_icons()
-        show_taskbar()
-        set_work_area(*getattr(self, "_original_work_area", get_work_area()))
-        self.close()
-    def on_win_tab(self):
-        # 模拟 Win+Tab
-        pyautogui.hotkey('win', 'tab')
-    def on_hide_all(self):
-        # 模拟 Win+D
-        pyautogui.hotkey('win', 'd')
-    def on_open_dgmix(self):
-        global GSHWND
-        ctypes.windll.user32.ShowWindow(GSHWND, 9) # 9=SW_RESTORE            
-        ctypes.windll.user32.SetForegroundWindow(GSHWND)
 
 # 游戏运行状态监听线程
 class MonitorRunningAppsThread(QThread):
@@ -7618,7 +7455,6 @@ class GameSelector(QWidget):
         _attach_debug_output_window(self.debug_output_window)
         self.apply_debug_output_setting()
         self.freezeapp = None
-        self.winTaskbar = TaskbarWindow()
         if self.killexplorer == True and STARTUP == False:
             self.wintaskbarshow()
         self.showFullScreen()
@@ -7709,6 +7545,10 @@ class GameSelector(QWidget):
         self.min_button = QPushButton("─")
         self.min_button.clicked.connect(self.minimize_window)
 
+        # 新增：显示桌面按钮（沉浸模式下显示，暂时回到桌面）
+        self.desktop_button = QPushButton("⌂")
+        self.desktop_button.clicked.connect(self.on_show_desktop_clicked)
+
         # 新增：冻结按钮（冻结相关功能开启时显示，在游戏详情按钮右侧）
         self.freeze_button = QPushButton("❄")
         self.freeze_button.clicked.connect(self._on_freeze_button_clicked)
@@ -7732,7 +7572,7 @@ class GameSelector(QWidget):
             btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(top_btn_style)
-        for btn in (self.favorite_button, self.min_button, self.quit_button):
+        for btn in (self.favorite_button, self.min_button, self.quit_button, self.desktop_button):
             btn.setFixedSize(int(69 * self.scale_factor), int(45 * self.scale_factor))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(top_btn_style)
@@ -7742,6 +7582,23 @@ class GameSelector(QWidget):
                 color: white;
             }
         """)
+        self.desktop_button.setStyleSheet(top_btn_style + """
+            QPushButton:hover {
+                background-color: #e81123;
+                color: white;
+            }
+        """)
+
+        # 沉浸模式：失焦置灰遮罩 + 焦点监测定时器
+        self._immersive_gray = False
+        self._immersive_last_fg = 0
+        self._temp_taskbar_shown = False
+        self.immersive_overlay = QWidget(self)
+        self.immersive_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 0.6);")
+        self.immersive_overlay.hide()
+        self.immersive_overlay.installEventFilter(self)  # 拦截点击执行 Win+D
+        self.immersive_focus_timer = QTimer(self)
+        self.immersive_focus_timer.timeout.connect(self._check_immersive_focus)
 
         # 创建游戏标题标签
         sorted_games = self.sort_games()
@@ -7779,6 +7636,7 @@ class GameSelector(QWidget):
         self.center_layout.addWidget(self.game_name_label)
         self.right_layout.addWidget(self.min_button)
         self.right_layout.addWidget(self.quit_button)
+        self.right_layout.addWidget(self.desktop_button)
 
         # 设置定时器每秒更新一次时间
         self.time_timer = QTimer(self)
@@ -7872,6 +7730,10 @@ class GameSelector(QWidget):
         main_layout.addWidget(self.scroll_area)
 
         self.setLayout(main_layout)
+
+        # 沉浸模式：隐藏最小化/关闭按钮，显示"显示桌面"按钮
+        # 必须在按钮加入布局（有父控件）之后调用，否则 setVisible(True) 会把无父控件弹出为顶层空白窗口
+        self._update_immersive_buttons()
         self.load_background_image()
 
         # 启动游戏运行状态监听线程
@@ -8023,6 +7885,8 @@ class GameSelector(QWidget):
             }}
         """)
         texta_layout.addWidget(self.left_label, alignment=Qt.AlignLeft)
+        self.left_label.setCursor(Qt.PointingHandCursor)
+        self.left_label.installEventFilter(self)  # 沉浸模式点击显示任务栏
         # 保存对 texta_layout 的引用，用于添加额外的后台应用按钮
         self.texta_layout = texta_layout
         self.extra_buttons_container = None
@@ -8051,6 +7915,8 @@ class GameSelector(QWidget):
             }}
         """)
         texta_layout.addWidget(self.right_label, alignment=Qt.AlignRight)
+        self.right_label.setCursor(Qt.PointingHandCursor)
+        self.right_label.installEventFilter(self)  # 沉浸模式点击显示任务栏
         
         # 包装文字布局到 QWidget
         texta_widget = QWidget()
@@ -8641,10 +8507,110 @@ class GameSelector(QWidget):
             super().closeEvent(event)
         except Exception:
             event.accept()
+    def _get_desktop_parent(self):
+        """获取桌面父窗口句柄（Progman/SHELLDLL_DefView 或 WorkerW）"""
+        progman = win32gui.FindWindow("Progman", None)
+        defview = win32gui.FindWindowEx(progman, 0, "SHELLDLL_DefView", None)
+        if defview:
+            return defview
+        result = []
+        def callback(hwnd, result):
+            if win32gui.GetClassName(hwnd) == "WorkerW":
+                child = win32gui.FindWindowEx(hwnd, 0, "SHELLDLL_DefView", None)
+                if child:
+                    result.append(child)
+        win32gui.EnumWindows(callback, result)
+        if result:
+            return result[0]
+        return win32gui.GetDesktopWindow()
+
     def wintaskbarshow(self):
+        """沉浸模式：隐藏桌面图标和任务栏，将游戏选择器窗口直接停靠到桌面"""
+        # 回到选择器：恢复暂时显示的任务栏
+        self._restore_temp_taskbar()
+        # 仅首次保存原始工作区：必须在任务栏仍可见时读取，
+        # 隐藏后 GetWindowRect 可能返回被 shell 移动过的矩形导致偏差
+        try:
+            if not getattr(self, '_original_work_area', None):
+                self._original_work_area = get_work_area()
+        except Exception:
+            pass
         hide_desktop_icons()
         hide_taskbar()
-        self.winTaskbar.show()
+        # 仅首次保存原始工作区，避免重复停靠时把 shell 已改写的工作区误存为原始值
+        # 沉浸全屏必须非广播写入：广播会触发 explorer 按其注册任务栏矩形重算并覆盖
+        try:
+            set_work_area(*get_screen_rect(), broadcast=False)
+        except Exception:
+            pass
+        # 延迟重申全屏工作区，避免 shell 重新注册任务栏时异步覆盖该设置
+        QTimer.singleShot(300, self._reassert_fullscreen_work_area)
+        QTimer.singleShot(1000, self._reassert_fullscreen_work_area)
+        # 将窗口停靠到桌面层
+        try:
+            if not getattr(self, '_docked_to_desktop', False):
+                self.winId()  # 确保窗口已创建
+                ctypes.windll.user32.SetParent(int(self.winId()), self._get_desktop_parent())
+                self._docked_to_desktop = True
+        except Exception:
+            pass
+
+    def _reassert_fullscreen_work_area(self):
+        """沉浸模式下重申全屏工作区（shell 可能在任务栏状态变化后覆盖该设置）"""
+        try:
+            if (getattr(self, 'killexplorer', False)
+                    and getattr(self, '_docked_to_desktop', False)
+                    and not getattr(self, '_temp_taskbar_shown', False)):
+                set_work_area(*get_screen_rect(), broadcast=False)
+        except Exception:
+            pass
+
+    def undock_from_desktop(self):
+        """退出沉浸模式：取消桌面停靠，还原图标/任务栏/工作区"""
+        self._temp_taskbar_shown = False
+        try:
+            if getattr(self, '_docked_to_desktop', False):
+                ctypes.windll.user32.SetParent(int(self.winId()), 0)
+                self._docked_to_desktop = False
+        except Exception:
+            pass
+        show_desktop_icons()
+        show_taskbar()
+        # 修复 shell 内部任务栏注册矩形与真实窗口矩形不一致的问题（工作区偏差根源）：
+        # 轻微改动任务栏高度再还原，触发 explorer 以真实窗口矩形重新注册 appbar
+        try:
+            taskbar = win32gui.FindWindow("Shell_TrayWnd", None)
+            if taskbar:
+                tl, tt, tr, tb_ = win32gui.GetWindowRect(taskbar)
+                SWP_NOZORDER = 0x0004
+                SWP_NOACTIVATE = 0x0010
+                ctypes.windll.user32.SetWindowPos(
+                    taskbar, 0, tl, tt, tr - tl, tb_ - tt - 1, SWP_NOZORDER | SWP_NOACTIVATE)
+
+                def _restore_tb_size():
+                    try:
+                        ctypes.windll.user32.SetWindowPos(
+                            taskbar, 0, tl, tt, tr - tl, tb_ - tt, SWP_NOZORDER | SWP_NOACTIVATE)
+                    except Exception:
+                        pass
+                QTimer.singleShot(120, _restore_tb_size)
+        except Exception:
+            pass
+        try:
+            set_work_area(*getattr(self, "_original_work_area", get_work_area()))
+        except Exception:
+            pass
+        # shell 异步重申工作区可能引入偏差，延迟以注册任务栏位置重算并补回
+        QTimer.singleShot(300, self._reassert_normal_work_area)
+        QTimer.singleShot(1000, self._reassert_normal_work_area)
+
+    def _reassert_normal_work_area(self):
+        """退出停靠后重申正常工作区（以 shell 注册的任务栏位置为准；若已重新停靠则跳过）"""
+        try:
+            if not getattr(self, '_docked_to_desktop', False):
+                set_work_area(*get_work_area())
+        except Exception:
+            pass
     def update_additional_game_name_label_position(self):
         """在滚动时同步更新additional_game_name_label的位置"""
         if (
@@ -9274,6 +9240,9 @@ class GameSelector(QWidget):
 
     def hide_window(self):
         """隐藏窗口"""
+        # 沉浸模式下窗口停靠在桌面，忽略任何隐藏行为（保持游戏选择器作为桌面可见）
+        if getattr(self, 'killexplorer', False) and getattr(self, '_docked_to_desktop', False):
+            return
         # 创建淡出动画
         self._hide_anim = QPropertyAnimation(self, b"windowOpacity", self)
         self._hide_anim.setStartValue(self.windowOpacity())
@@ -9336,6 +9305,131 @@ class GameSelector(QWidget):
 
         self._min_anim.finished.connect(on_finished)
         self._min_anim.start()
+
+    def _update_immersive_buttons(self):
+        """沉浸模式开启时隐藏最小化/关闭按钮，显示"显示桌面"按钮"""
+        immersive = bool(getattr(self, 'killexplorer', False))
+        try:
+            self.min_button.setVisible(not immersive)
+            self.quit_button.setVisible(not immersive)
+            self.desktop_button.setVisible(immersive)
+        except Exception:
+            pass
+        # 沉浸模式开启时启动焦点监测，关闭时停止并清除此灰遮罩
+        try:
+            if immersive:
+                self.immersive_focus_timer.start(300)
+            else:
+                self.immersive_focus_timer.stop()
+                self._immersive_gray = False
+                self.immersive_overlay.hide()
+        except Exception:
+            pass
+
+    def _check_immersive_focus(self):
+        """沉浸模式焦点监测：前台为其他应用时窗口置灰，点击遮罩恢复"""
+        try:
+            if not getattr(self, 'killexplorer', False) or not self.isVisible():
+                self._immersive_gray = False
+                self.immersive_overlay.hide()
+                return
+            hwnd = int(self.winId())
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            # 前台为空/无效窗口/桌面壳/本窗口 → 视为活跃
+            fg_is_active = (not fg) or (fg == hwnd)
+            if not fg_is_active:
+                try:
+                    if not win32gui.IsWindow(fg):
+                        fg_is_active = True
+                    else:
+                        fg_is_active = win32gui.GetClassName(fg) in (
+                            'Progman', 'WorkerW', 'SHELLDLL_DefView', 'Shell_TrayWnd')
+                except Exception:
+                    fg_is_active = False
+            if fg_is_active:
+                self._immersive_last_fg = 0
+                self._immersive_gray = False
+            elif fg != self._immersive_last_fg:
+                # 前台切换到其他应用 → 置灰；前台未变则维持现状（点击遮罩可恢复）
+                self._immersive_last_fg = fg
+                self._immersive_gray = True
+            if self._immersive_gray:
+                self.immersive_overlay.setGeometry(self.rect())
+                self.immersive_overlay.show()
+                self.immersive_overlay.raise_()
+            else:
+                self.immersive_overlay.hide()
+        except Exception:
+            pass
+
+    def _on_immersive_overlay_clicked(self):
+        """点击暗色遮罩：执行 Win+D 显示桌面（游戏选择器停靠在桌面，随之完整可见）"""
+        self._immersive_gray = False
+        try:
+            self.immersive_overlay.hide()
+        except Exception:
+            pass
+        # 回到选择器：恢复暂时显示的任务栏（Win+D 后全屏工作区由延迟重申补回）
+        self._restore_temp_taskbar()
+        # 优先使用 Shell 的 ToggleDesktop（等价 Win+D，比模拟按键更可靠）
+        try:
+            import win32com.client
+            win32com.client.Dispatch("shell.application").ToggleDesktop()
+        except Exception:
+            try:
+                pyautogui.hotkey('win', 'd')
+            except Exception:
+                pass
+        # Win+D 处理期间 shell 会重申"屏幕-任务栏"工作区，延迟补回全屏工作区
+        QTimer.singleShot(300, self._reassert_fullscreen_work_area)
+        QTimer.singleShot(1000, self._reassert_fullscreen_work_area)
+
+    def eventFilter(self, source, event):
+        """拦截置灰遮罩/底部文字的点击"""
+        try:
+            from PyQt5.QtCore import QEvent
+            if event.type() == QEvent.MouseButtonPress:
+                if source is self.immersive_overlay:
+                    self._on_immersive_overlay_clicked()
+                    return True
+                if source in (getattr(self, 'left_label', None), getattr(self, 'right_label', None)):
+                    self._on_bottom_text_clicked()
+                    return True
+        except Exception:
+            pass
+        return super().eventFilter(source, event)
+
+    def _on_bottom_text_clicked(self):
+        """沉浸模式下点击底部文字：暂时显示任务栏，直到下次回到选择器"""
+        if not (getattr(self, 'killexplorer', False) and getattr(self, '_docked_to_desktop', False)):
+            return
+        if getattr(self, '_temp_taskbar_shown', False):
+            return
+        self._temp_taskbar_shown = True
+        try:
+            show_taskbar()
+            # 工作区暂还原为原始值，避免最大化窗口盖住任务栏
+            orig = getattr(self, '_original_work_area', None)
+            if not orig:
+                orig = get_work_area()
+            set_work_area(*orig)
+        except Exception:
+            pass
+
+    def _restore_temp_taskbar(self):
+        """回到选择器时恢复暂时显示的任务栏"""
+        if getattr(self, '_temp_taskbar_shown', False):
+            self._temp_taskbar_shown = False
+            try:
+                hide_taskbar()
+            except Exception:
+                pass
+
+    def on_show_desktop_clicked(self):
+        """暂时回到桌面：取消桌面停靠并还原图标/任务栏/工作区，然后隐藏窗口"""
+        # 先取消停靠（解除 hide_window 的沉浸模式守卫），再正常隐藏
+        self.undock_from_desktop()
+        self.hide_window()
 
     def on_favorite_button_clicked(self):
         if getattr(self, 'current_section', 0) == 1 and getattr(self, 'more_section', 0) == 0:
@@ -13717,8 +13811,8 @@ class GameSelector(QWidget):
     def exitdef(self):
         """退出程序"""
         # 停止所有线程
-        if self.killexplorer == True and hasattr(self, 'winTaskbar'):
-            self.winTaskbar.on_back_to_desktop()
+        if self.killexplorer == True:
+            self.undock_from_desktop()
         if hasattr(self, 'monitor_thread'):
             self.monitor_thread.stop()
             self.monitor_thread.wait()
@@ -13820,18 +13914,21 @@ class GameSelector(QWidget):
                 btn = getattr(self, btn_name)
                 btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
                 btn.setStyleSheet(top_btn_style)
-        for btn_name in ('favorite_button', 'min_button', 'quit_button'):
+        for btn_name in ('favorite_button', 'min_button', 'quit_button', 'desktop_button'):
             if hasattr(self, btn_name):
                 btn = getattr(self, btn_name)
                 btn.setFixedSize(int(69 * self.scale_factor), int(45 * self.scale_factor))
                 btn.setStyleSheet(top_btn_style)
+        red_hover = """
+            QPushButton:hover {
+                background-color: #e81123;
+                color: white;
+            }
+        """
         if hasattr(self, 'quit_button'):
-            self.quit_button.setStyleSheet(top_btn_style + """
-                QPushButton:hover {
-                    background-color: #e81123;
-                    color: white;
-                }
-            """)
+            self.quit_button.setStyleSheet(top_btn_style + red_hover)
+        if hasattr(self, 'desktop_button'):
+            self.desktop_button.setStyleSheet(top_btn_style + red_hover)
         
         # 更新游戏名标签和时间标签
         if hasattr(self, 'game_name_label'):
@@ -17453,7 +17550,7 @@ class SettingsWindow(QWidget):
         self.killexplorer_button.clicked.connect(self.toggle_killexplorer)
         layout.addWidget(self.killexplorer_button)
 
-        hint1 = QLabel(self.tr("开启后会隐藏桌面图标和任务栏，若出现问题关闭此功能后重启即可"))
+        hint1 = QLabel(self.tr("开启后会隐藏桌面图标和任务栏，若出现问题关闭此功能后重启即可（开启模式后点击底部文字可显示状态栏）"))
         hint1.setWordWrap(True)
         hint1.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint1)
@@ -19271,9 +19368,10 @@ class SettingsWindow(QWidget):
             json.dump(settings, f, indent=4)
         self.parent().killexplorer = settings["killexplorer"]
         if self.parent().killexplorer == True:
-            hide_desktop_icons()
-            hide_taskbar()
-            self.parent().winTaskbar.show()
+            self.parent().wintaskbarshow()
+        else:
+            self.parent().undock_from_desktop()
+        self.parent()._update_immersive_buttons()
 
     def toggle_freeze(self):
         """切换 freeze 状态并保存设置"""
@@ -19495,8 +19593,8 @@ class SettingsWindow(QWidget):
         self.close_program_button.setText(self.tr("正在退出程序..."))
         self.close_program_button.setEnabled(False)  # 禁用按钮以防止重复点击
         # 如果开启了沉浸模式
-        if self.parent().killexplorer and hasattr(self.parent(), 'winTaskbar'):
-            self.parent().winTaskbar.on_back_to_desktop()
+        if self.parent().killexplorer:
+            self.parent().undock_from_desktop()
         # 退出程序
         QTimer.singleShot(500, QApplication.quit)
 
