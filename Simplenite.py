@@ -7456,7 +7456,7 @@ class GameSelector(QWidget):
         self.apply_debug_output_setting()
         self.freezeapp = None
         if self.killexplorer == True and STARTUP == False:
-            self.wintaskbarshow()
+            self._immersive_bring_to_front()
         self.showFullScreen()
         # 确保窗口捕获焦点
         self.setFocusPolicy(Qt.StrongFocus)
@@ -8225,9 +8225,10 @@ class GameSelector(QWidget):
                 if self.is_mouse_simulation_running:
                     self.is_mouse_simulation_running = False
                     return
-                self.show_window()
                 if self.killexplorer == True:
-                    self.wintaskbarshow()
+                    self._immersive_bring_to_front()
+                else:
+                    self.show_window()
 
         self.tray_icon.activated.connect(tray_icon_activated)
         self.tray_icon.show()  # 显示托盘图标
@@ -9085,6 +9086,25 @@ class GameSelector(QWidget):
                     self.grid_layout.activate()
                 QApplication.sendPostedEvents()
                 QApplication.processEvents()
+            except Exception:
+                pass
+            # 检测按钮几何位置是否就绪：若多个按钮 x 坐标相同（堆叠在同一位置），
+            # 或尺寸仍为 0，说明布局尚未完成，延迟重试
+            try:
+                btns = [b for b in getattr(self, 'buttons', [])
+                        if hasattr(b, 'geometry')]
+                if len(btns) > 1:
+                    xs = set()
+                    ready = True
+                    for b in btns:
+                        g = b.geometry()
+                        if g.width() <= 0 or g.height() <= 0:
+                            ready = False
+                            break
+                        xs.add(g.x())
+                    if not ready or len(xs) <= 1:
+                        QTimer.singleShot(40, lambda: self._start_fly_in_animations(ensure_layout_ready=True))
+                        return
             except Exception:
                 pass
 
@@ -11934,10 +11954,40 @@ class GameSelector(QWidget):
                         # 如果窗口不存在，刷新后台窗口列表
                         self.update_background_buttons()
                         return
-                    # 恢复窗口
-                    if win32gui.IsIconic(hwnd):  # 窗口已最小化
-                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                    win32gui.SetForegroundWindow(hwnd)
+                    # 若目标进程已挂起，先恢复进程再切前台，避免 SetForegroundWindow 卡死
+                    pid = window_info.get('pid')
+                    need_resume = False
+                    if (pid and self._is_pid_suspended(pid)
+                            and os.path.exists("./_internal/pssuspend64.exe")):
+                        subprocess.Popen(
+                            ['./_internal/pssuspend64.exe', '-r', str(pid)],
+                            creationflags=subprocess.CREATE_NO_WINDOW
+                        )
+                        # 清除可能的冻结标记：按 exe_path 匹配游戏名
+                        try:
+                            exe_path = (window_info.get('exe_path') or '').lower()
+                            for g in valid_apps:
+                                if g.get('path', '').lower() == exe_path:
+                                    self.frozen_games.discard(g['name'])
+                                    break
+                        except Exception:
+                            pass
+                        need_resume = True
+                    def activate():
+                        try:
+                            if win32gui.IsIconic(hwnd):  # 窗口已最小化
+                                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                            win32gui.SetForegroundWindow(hwnd)
+                        except Exception:
+                            try:
+                                self.update_background_buttons()
+                            except Exception:
+                                pass
+                    if need_resume:
+                        # 等待进程从挂起中恢复，能正常处理窗口消息后再激活
+                        QTimer.singleShot(450, activate)
+                    else:
+                        activate()
                 except Exception:
                     try:
                         self.update_background_buttons()
@@ -12354,12 +12404,38 @@ class GameSelector(QWidget):
     def restore_background_window(self, window_info):
         """恢复后台窗口"""
         hwnd = window_info['hwnd']
+        # 若目标进程已挂起，先恢复进程再切前台，避免 SetForegroundWindow 卡死
+        pid = window_info.get('pid')
+        need_resume = False
         try:
-            if win32gui.IsIconic(hwnd):  # 窗口已最小化
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetForegroundWindow(hwnd)
+            if (pid and self._is_pid_suspended(pid)
+                    and os.path.exists("./_internal/pssuspend64.exe")):
+                subprocess.Popen(
+                    ['./_internal/pssuspend64.exe', '-r', str(pid)],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                try:
+                    exe_path = (window_info.get('exe_path') or '').lower()
+                    for g in valid_apps:
+                        if g.get('path', '').lower() == exe_path:
+                            self.frozen_games.discard(g['name'])
+                            break
+                except Exception:
+                    pass
+                need_resume = True
         except Exception:
             pass
+        def activate():
+            try:
+                if win32gui.IsIconic(hwnd):  # 窗口已最小化
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+        if need_resume:
+            QTimer.singleShot(450, activate)
+        else:
+            activate()
         if not settings.get("skip_minimize_on_game_open", False):
             self.hide_window()
 
@@ -12919,6 +12995,36 @@ class GameSelector(QWidget):
             pass
         return pressed
 
+    def _immersive_bring_to_front(self):
+        """沉浸模式下：执行 Win+D 显示桌面，并把焦点正确移交给游戏启动器"""
+        try:
+            # 确保选择器停靠在桌面并恢复全屏工作区
+            self.wintaskbarshow()
+            # 执行 Win+D 显示桌面（选择器停靠在桌面，随之完整可见）
+            try:
+                win32com.client.Dispatch("shell.application").ToggleDesktop()
+            except Exception:
+                try:
+                    pyautogui.hotkey('win', 'd')
+                except Exception:
+                    pass
+            # Win+D 后 shell 会重申"屏幕-任务栏"工作区，延迟补回全屏工作区
+            QTimer.singleShot(300, self._reassert_fullscreen_work_area)
+            QTimer.singleShot(1000, self._reassert_fullscreen_work_area)
+            # 等待 Win+D 完成后，把焦点正确移交到游戏启动器
+            def _focus_launcher():
+                try:
+                    self.show_window()
+                    self.raise_()
+                    self.activateWindow()
+                    self.setFocus()
+                    ctypes.windll.user32.SetForegroundWindow(GSHWND)
+                except Exception:
+                    pass
+            QTimer.singleShot(250, _focus_launcher)
+        except Exception as e:
+            print(f"_immersive_bring_to_front error: {e}")
+
     def guide_run(self):
         """置顶开启主页面"""
         try:
@@ -12929,9 +13035,9 @@ class GameSelector(QWidget):
             #if current_time < ((self.ignore_input_until)+2000):
             #    return
             self.ignore_input_until = _get_ticks() + 300
-            #if STARTUP:subprocess.run(["taskkill", "/f", "/im", "explorer.exe"])#STARTUP = False
             if self.killexplorer == True:
-                self.wintaskbarshow()
+                self._immersive_bring_to_front()
+                return
             #if STARTUP:
             #    self.exitdef(False)
             #    # 无参数重启
