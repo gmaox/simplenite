@@ -7730,6 +7730,9 @@ class GameSelector(QWidget):
         main_layout.addWidget(self.scroll_area)
 
         self.setLayout(main_layout)
+        # 解除布局对窗口最小尺寸的约束：否则滚动区等子控件会把窗口最小宽度锁死，
+        # 导致分辨率降低时窗口无法横向跟随变窄
+        main_layout.setSizeConstraint(QtWidgets.QLayout.SetNoConstraint)
 
         # 沉浸模式：隐藏最小化/关闭按钮，显示"显示桌面"按钮
         # 必须在按钮加入布局（有父控件）之后调用，否则 setVisible(True) 会把无父控件弹出为顶层空白窗口
@@ -9047,6 +9050,11 @@ class GameSelector(QWidget):
         ensure_layout_ready: 启动前强制激活布局。__init__ 阶段按钮 geometry 尚未
         准备好时需传 True；show_window 阶段已布局完成可省略激活步骤，但传 True 更安全。
         """
+        # 防止短时间内重复触发：__init__ 的 singleShot(0) 与沉浸模式 show_window()
+        # 间隔很短，重复触发会在动画中途重建 opacity effect，导致动画目标被销毁、
+        # 按钮停在半途（QPropertyAnimation ... without target 警告）
+        # 注意：该判断必须放在布局就绪检测之后，否则会拦截“延迟重试”导致动画永不启动
+
         # 若开发者选项禁用启动飞入动画，则在任意调用点均跳过动画
         if settings.get("disable_startup_fly_in_animation", False):
             # 取消预隐藏标志并清理可能已设置的 opacity effect，确保按钮可见
@@ -9108,6 +9116,13 @@ class GameSelector(QWidget):
             except Exception:
                 pass
 
+        # 布局已就绪后做重复触发保护：动画运行中再次调用会重建 opacity effect，
+        # 使 opacity 动画失去目标并让按钮停在半途
+        _now_ts = _get_ticks()
+        if _now_ts - getattr(self, '_fly_in_start_ts', 0) < 1500:
+            return
+        self._fly_in_start_ts = _now_ts
+
         self.update_highlight()
 
         # 停止上一次遗留的飞入动画，避免重复触发时互相冲突
@@ -9166,6 +9181,19 @@ class GameSelector(QWidget):
                 try:
                     for b, g in targets:
                         b.setFixedSize(g.width(), g.height())
+                    # 兜底：动画若被中途打断，清理透明度效果，避免按钮停留在半透明/半尺寸状态
+                    for b, _g in targets:
+                        try:
+                            if isinstance(b.graphicsEffect(), QtWidgets.QGraphicsOpacityEffect):
+                                b.setGraphicsEffect(None)
+                        except Exception:
+                            pass
+                    for cb in getattr(self, 'control_buttons', []) or []:
+                        try:
+                            if isinstance(cb.graphicsEffect(), QtWidgets.QGraphicsOpacityEffect):
+                                cb.setGraphicsEffect(None)
+                        except Exception:
+                            pass
                     self.grid_layout.setEnabled(True)
                 except Exception:
                     pass
