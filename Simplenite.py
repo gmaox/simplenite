@@ -8346,10 +8346,11 @@ class GameSelector(QWidget):
                 "A / 进入游戏        Y / 关闭游戏        X / 鼠标模拟        ≡ / 游戏菜单            📦️Simplenite v%1"
             ).replace("%1", APP_VERSION)
         )
+        #备选样式 font-family: "Microsoft YaHei Light", "Microsoft YaHei"; font-weight: 300;
         self.right_label.setStyleSheet(f"""
             QLabel {{
                 font-family: "Microsoft YaHei"; 
-                color: white;
+                color: rgba(255, 255, 255, 180);
                 font-size: {int(25 * self.scale_factor)}px;
                 padding-bottom: {int(10 * self.scale_factor)}px;
                 padding-right: {int(50 * self.scale_factor)}px;
