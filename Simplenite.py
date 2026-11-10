@@ -7993,6 +7993,12 @@ class GameSelector(QWidget):
         # 默认隐藏，仅当冻结相关功能开启且当前游戏运行中时显示
         self.freeze_button.setVisible(False)
 
+        # 新增：返回按钮（仅在"所有软件"界面显示，返回主页）
+        self.back_button = QPushButton("←")
+        self.back_button.setToolTip(self.tr("返回"))
+        self.back_button.clicked.connect(self.switch_to_main_interface)
+        self.back_button.setVisible(False)
+
         # 顶部功能按钮统一风格
         top_btn_style = f"""
             QPushButton {{
@@ -8006,7 +8012,7 @@ class GameSelector(QWidget):
             }}
         """
         # 左侧停靠按钮统一2倍宽度
-        for btn in (self.more_button, self.screenshot_button, self.freeze_button):
+        for btn in (self.back_button, self.more_button, self.screenshot_button, self.freeze_button):
             btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(top_btn_style)
@@ -8216,6 +8222,7 @@ class GameSelector(QWidget):
         self.window_toggle_delay = 300  # 设置300毫秒的防抖延迟
 
         # 将按钮添加到左侧布局
+        self.left_layout.insertWidget(0, self.back_button)
         self.left_layout.addWidget(self.screenshot_button)
         self.left_layout.addWidget(self.freeze_button)
 
@@ -10065,9 +10072,13 @@ class GameSelector(QWidget):
         self.scale_factor2 = self.scale_factor  # 用于按钮和图像的缩放因数
         self.current_index = 0
         self.more_section = 1
-        # 离开圆形按钮区域，恢复显示游戏详情按钮
+        # 离开圆形按钮区域，恢复显示游戏详情按钮；显示返回按钮
         try:
             self.screenshot_button.setVisible(True)
+        except Exception:
+            pass
+        try:
+            self.back_button.setVisible(True)
         except Exception:
             pass
         # 使用淡出过渡动画改变 scroll_area 大小并隐藏控制按钮
@@ -10085,9 +10096,13 @@ class GameSelector(QWidget):
         self.current_index = 0
         self.more_section = 0
         target_h = int(320 * self.scale_factor * 2.4)
-        # 回到游戏选择区域，恢复显示游戏详情按钮
+        # 回到游戏选择区域，恢复显示游戏详情按钮；隐藏返回按钮
         try:
             self.screenshot_button.setVisible(True)
+        except Exception:
+            pass
+        try:
+            self.back_button.setVisible(False)
         except Exception:
             pass
         try:
@@ -14623,7 +14638,7 @@ class GameSelector(QWidget):
             }}
         """
         # 左侧停靠按钮统一2倍宽度
-        for btn_name in ('more_button', 'screenshot_button', 'freeze_button'):
+        for btn_name in ('back_button', 'more_button', 'screenshot_button', 'freeze_button'):
             if hasattr(self, btn_name):
                 btn = getattr(self, btn_name)
                 btn.setFixedSize(int(120 * self.scale_factor), int(45 * self.scale_factor))
