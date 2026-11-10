@@ -19401,7 +19401,7 @@ class SettingsWindow(QWidget):
         layout.addWidget(hint_disable)
 
         self.sync_sunshine_order_button = QPushButton(
-            self.tr("和sunshine基地版同步游戏顺序  %1").replace('%1', '开' if settings.get('sync_game_order_with_sunshine', False) else '关')
+            self.tr("向sunshine基地版发送游戏顺序  %1").replace('%1', '开' if settings.get('sync_game_order_with_sunshine', False) else '关')
         )
         self.sync_sunshine_order_button.setStyleSheet(f"""
             QPushButton {{
