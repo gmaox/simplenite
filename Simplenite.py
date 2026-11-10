@@ -15083,9 +15083,16 @@ class GameSelector(QWidget):
 
     def restart_program(self):
         """重启程序"""
-        QApplication.quit()
+        # 停止所有后台线程（与 exitdef 一致），否则旧进程残留会导致 exe 被占用
+        if hasattr(self, 'monitor_thread'):
+            self.monitor_thread.stop()
+            self.monitor_thread.wait()
+        if hasattr(self, 'controller_thread'):
+            self.controller_thread.stop()
+            self.controller_thread.wait()
         # 只传递可执行文件的路径，不传递其他参数
         subprocess.Popen([sys.executable])
+        QApplication.quit()
     def addgamebutton(self):
         self.hide_window()
         self.addandrefresh_games()
@@ -20320,9 +20327,17 @@ class SettingsWindow(QWidget):
 
     def restart_program(self):
         """重启程序"""
-        QApplication.quit()
+        # 停止所有后台线程（与托盘菜单"退出"一致），否则旧进程残留会导致 exe 被占用
+        parent = self.parent()
+        if hasattr(parent, 'monitor_thread'):
+            parent.monitor_thread.stop()
+            parent.monitor_thread.wait()
+        if hasattr(parent, 'controller_thread'):
+            parent.controller_thread.stop()
+            parent.controller_thread.wait()
         # 只传递可执行文件的路径，不传递其他参数
         subprocess.Popen([sys.executable])
+        QApplication.quit()
 
     def close_program(self):
         """完全关闭程序"""
@@ -20331,6 +20346,14 @@ class SettingsWindow(QWidget):
         # 如果开启了沉浸模式
         if self.parent().killexplorer:
             self.parent().undock_from_desktop()
+        # 停止所有后台线程（与托盘菜单"退出"一致），否则线程未结束会导致进程残留、exe 被占用
+        parent = self.parent()
+        if hasattr(parent, 'monitor_thread'):
+            parent.monitor_thread.stop()
+            parent.monitor_thread.wait()
+        if hasattr(parent, 'controller_thread'):
+            parent.controller_thread.stop()
+            parent.controller_thread.wait()
         # 退出程序
         QTimer.singleShot(500, QApplication.quit)
 
