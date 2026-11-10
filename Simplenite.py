@@ -25,7 +25,7 @@ from PyQt5.QtCore import QDateTime, QSize, Qt, QThread, pyqtSignal, pyqtSlot, QT
 import subprocess, time, os,win32con, ctypes, re, win32com.client, ctypes, time, pyautogui
 from ctypes import wintypes
 
-APP_VERSION = "0.97.5"
+APP_VERSION = "0.97.6"
 
 #& C:/Users/86150/AppData/Local/Programs/Python/Python38/python.exe -m PyInstaller --add-data "fav.ico;." --add-data '1.png;.' --add-data 'pssuspend64.exe;.' -w Simplenite.py -i '.\fav.ico' --uac-admin --noconfirm
 # 定义 Windows API 函数
@@ -405,6 +405,7 @@ settings = {
     "use_peer_level_launch": False,
     "debug_output_window": False,
     "disable_startup_fly_in_animation": False,
+    "sync_game_order_with_sunshine": False,
     "ignored_apps": ["Desktop", "Steam Big Picture", "Xbox Game"],
     "auto_backup": {
         "enabled": False,
@@ -580,6 +581,120 @@ def load_apps():
     #print(f"已加载 {valid_apps} 个有效应用程序")
 load_apps()
 
+# ========== 与 Sunshine 基地版同步游戏顺序 ==========
+# Sunshine（含 Foundation Sunshine 基地版）的 WebUI 使用 POST /api/apps 保存应用列表：
+# 请求体为 {"apps": [...], "editApp": {}} 时会用给定数组整体替换 apps.json 的 apps 节点，
+# 并调用 proc::refresh 让服务立即重新加载。本机（回环地址）请求无需登录凭据。
+def get_sunshine_web_port(default=47990):
+    """从 Sunshine 配置文件读取 Web UI 端口"""
+    conf_path = os.path.join(APP_INSTALL_PATH, "config", "sunshine.conf")
+    try:
+        if os.path.exists(conf_path):
+            with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == "port":
+                        return int(value.strip())
+    except Exception as e:
+        print(f"读取 sunshine.conf 端口失败: {e}")
+    return default
+
+
+def _normalize_sunshine_app_name(name):
+    """去掉 SunshineAppManager 使用的两位数字前缀，便于按名称匹配"""
+    return re.sub(r'^\d{2} ', '', str(name or ""))
+
+
+def apply_sunshine_app_order(ordered_names):
+    """把主页游戏顺序写入 apps.json，并通过 Sunshine Web API 通知其重新加载。
+
+    ordered_names: 按期望顺序排列的游戏名称列表（通常来自 sort_games）。
+    返回 (是否成功, 提示信息)，可在后台线程中调用。
+    """
+    json_path = os.path.join(APP_INSTALL_PATH, "config", "apps.json")
+    try:
+        with open(json_path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception as e:
+        return False, QApplication.translate("Simplenite", "读取 apps.json 失败：%1").replace('%1', str(e))
+
+    apps = data.get("apps")
+    if not isinstance(apps, list) or not apps:
+        return False, QApplication.translate("Simplenite", "apps.json 中没有可同步的应用")
+
+    normalized_order = [_normalize_sunshine_app_name(name) for name in ordered_names]
+    wanted = set(normalized_order)
+
+    # 按名称建立原始条目队列，原样保留条目的其它字段
+    buckets = {}
+    for app in apps:
+        buckets.setdefault(_normalize_sunshine_app_name(app.get("name", "")), []).append(app)
+
+    sequence = []
+    used_count = {}
+    for name in normalized_order:
+        bucket = buckets.get(name)
+        if not bucket:
+            continue
+        pos = used_count.get(name, 0)
+        if pos < len(bucket):
+            sequence.append(bucket[pos])
+            used_count[name] = pos + 1
+
+    if not sequence:
+        return False, QApplication.translate("Simplenite", "没有找到可同步的游戏")
+
+    # 只替换参与排序的游戏所在槽位，其它条目（如 Desktop）位置保持不变
+    new_apps = list(apps)
+    seq_index = 0
+    for i, app in enumerate(apps):
+        if _normalize_sunshine_app_name(app.get("name", "")) in wanted:
+            if seq_index >= len(sequence):
+                break
+            new_apps[i] = sequence[seq_index]
+            seq_index += 1
+
+    if new_apps == apps:
+        return True, QApplication.translate("Simplenite", "游戏顺序已经是同步状态")
+
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    port = get_sunshine_web_port()
+    payload = {"apps": new_apps, "editApp": {}}
+    last_error = None
+    for scheme in ("https", "http"):
+        url = f"{scheme}://127.0.0.1:{port}/api/apps"
+        try:
+            resp = requests.post(url, json=payload, timeout=5, verify=False)
+        except requests.exceptions.SSLError as e:
+            last_error = str(e)
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_error = str(e)
+            continue
+        except Exception as e:
+            last_error = str(e)
+            break
+        if resp.status_code != 200:
+            last_error = f"HTTP {resp.status_code}"
+            continue
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        if str(body.get("status", "true")).lower() == "false":
+            return False, QApplication.translate("Simplenite", "Sunshine 拒绝保存：%1").replace('%1', str(body.get("error", "")))
+        return True, QApplication.translate("Simplenite", "已同步游戏顺序到 Sunshine")
+
+    return False, QApplication.translate("Simplenite", "同步失败（请确认 Sunshine 正在运行）：%1").replace('%1', str(last_error))
+
 more_apps = []
 def load_morefloder_shortcuts():
     """解析 ./morefloder 文件夹下的快捷方式并添加到 more_apps"""
@@ -729,7 +844,7 @@ def _enable_peer_level_launch():
 def _fallback_to_peer_level_launch(path, show_warning=True):
     if show_warning:
         QMessageBox.warning(None, QApplication.translate("Simplenite", "权限提示"),
-            QApplication.translate("Simplenite", "CreateProcessAsUser 失败（权限不足）。已启用同级权限启动模式规避此问题，可前往应用设置-开发者选项查看该选项详情"))
+            QApplication.translate("Simplenite", "CreateProcessAsUser 失败（权限不足）。已启用同级权限启动模式规避此问题，可前往应用设置-实验性功能查看该选项详情"))
     _enable_peer_level_launch()
     try:
         print(f"以同级权限启动: {path}")
@@ -1545,7 +1660,7 @@ def mao_prompt_user_select_folder_for_var(varname, suggested_folder=None, parent
             for proc in psutil.process_iter(['pid', 'name', 'exe']):
                 try:
                     if (proc.info['pid'] in hwnd_pid and proc.info.get('exe') and proc.info.get('name')
-                            and proc.info['name'].lower() not in ("explorer.exe", "desktopgame.exe", "textinputhost.exe", "quickstreamappadd.exe")):
+                            and proc.info['name'].lower() not in ("explorer.exe", "simplenite.exe", "textinputhost.exe", "quickstreamappadd.exe")):
                         proc_list.append(proc)
                 except Exception:
                     continue
@@ -4294,10 +4409,10 @@ class _INPUT(ctypes.Structure):
 
 
 class ScreenshotWindow(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_game=None):
         super().__init__(parent)
         self.active_dialog = None  # 新增：记录当前弹窗
-        self.filter_game_name = None  # 当前筛选的游戏名
+        self.filter_game_name = initial_game  # 当前筛选的游戏名
         self.setWindowTitle(self.tr("截图浏览"))
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setStyleSheet("background-color: #1e1e1e;")
@@ -5022,6 +5137,28 @@ class ScreenshotWindow(QDialog):
         self.init_left_panel_buttons() # 初始化左侧按钮
         self.load_all_images = False  # 新增：是否加载全部图片的标志
         #self.update_highlight()  # 初始化高亮状态
+        # 供外部（托盘“显示全部游戏 → ...”菜单）调用的左侧面板动作映射
+        self._game_action_handlers = {
+            "sync": on_backup_save_clicked,
+            "restore": on_backup_restore_clicked,
+            "backup_list": on_view_backup_list_clicked,
+            "mapping": on_mapping_clicked,
+            "freeze": on_freeze_clicked,
+            "custom_proc": on_custom_proc_clicked,
+            "tools": on_tools_clicked,
+            "cover": on_cover_clicked,
+            "rename": on_rename_clicked,
+            "open_folder": on_open_folder_clicked,
+            "remove": on_remove_clicked,
+        }
+
+    def run_game_action(self, game_name, action_key):
+        """在隐藏的详情窗口中执行指定左侧面板按钮动作（无需显示整个详情页）。"""
+        handler = getattr(self, "_game_action_handlers", {}).get(action_key)
+        if handler is None:
+            return
+        self.apply_game_state(game_name)
+        handler()
 
     def on_item_clicked(self, item):
         if QApplication.mouseButtons() == Qt.RightButton:  # 检测是否为右键点击
@@ -5868,43 +6005,50 @@ class ScreenshotWindow(QDialog):
             game, ok = QtWidgets.QInputDialog.getItem(self, self.tr("筛选游戏"), self.tr("选择游戏："), games, 0, False)
             self.filter_game_name = game if ok and game != "全部游戏" else None
         if ok and game:
-            self.game_name_label.setText(game)
-            try:
-                self._refresh_save_path_buttons(game)
-            except Exception:
-                pass
-            # 新增：同步按钮状态
-            if "freeze_mode" in settings and game in settings["freeze_mode"]:
-                self.btn_freeze.setText(self.tr("冻结方式(%1)").replace('%1', settings['freeze_mode'][game]))
-            else:
-                self.btn_freeze.setText(self.tr("冻结方式(跟随全局)"))
-            if "custom_tools" in settings:
-                for item in settings["custom_tools"]:
-                    if item["name"] == game:
-                        self.btn_tools.setText(self.tr("附加工具启动(%1)").replace('%1', str(len(item['tools']))))
-                        break
-                else:
-                    self.btn_tools.setText(self.tr("附加工具启动(0)"))
+            self.apply_game_state(game)
+            self.reload_screenshots()
+
+    def apply_game_state(self, game):
+        """把左侧面板按钮的文本/显隐同步到指定游戏（不重新加载截图）。"""
+        if not game:
+            return
+        self.filter_game_name = None if game == "全部游戏" else game
+        self.game_name_label.setText(game)
+        try:
+            self._refresh_save_path_buttons(game)
+        except Exception:
+            pass
+        # 新增：同步按钮状态
+        if "freeze_mode" in settings and game in settings["freeze_mode"]:
+            self.btn_freeze.setText(self.tr("冻结方式(%1)").replace('%1', settings['freeze_mode'][game]))
+        else:
+            self.btn_freeze.setText(self.tr("冻结方式(跟随全局)"))
+        if "custom_tools" in settings:
+            for item in settings["custom_tools"]:
+                if item["name"] == game:
+                    self.btn_tools.setText(self.tr("附加工具启动(%1)").replace('%1', str(len(item['tools']))))
+                    break
             else:
                 self.btn_tools.setText(self.tr("附加工具启动(0)"))
-            if "custom_valid_apps" in settings and game in [item["name"] for item in settings["custom_valid_apps"]]:
-                self.btn_custom_proc.setText(self.tr("配置自定义进程(✔)"))
-            else:
-                self.btn_custom_proc.setText(self.tr("配置自定义进程(×)"))
-            if "on_mapping_clicked" in settings and game in settings["on_mapping_clicked"]:
-                self.btn_mapping.setText(self.tr("游玩时开启映射(✔)"))
-            else:
-                self.btn_mapping.setText(self.tr("游玩时开启映射(×)"))
-            # 新增：显示游玩时间
-            play_time = settings.get("play_time", {}).get(game, 0)
-            if play_time < 60:
-                play_time_str = self.tr("游玩时间：%1 分钟").replace('%1', str(play_time))
-            else:
-                hours = play_time // 60
-                minutes = play_time % 60
-                play_time_str = self.tr("游玩时间：%1 小时 %2 分钟").replace('%1', str(hours)).replace('%2', str(minutes))
-            self.play_time_label.setText(play_time_str)
-            self.reload_screenshots()
+        else:
+            self.btn_tools.setText(self.tr("附加工具启动(0)"))
+        if "custom_valid_apps" in settings and game in [item["name"] for item in settings["custom_valid_apps"]]:
+            self.btn_custom_proc.setText(self.tr("配置自定义进程(✔)"))
+        else:
+            self.btn_custom_proc.setText(self.tr("配置自定义进程(×)"))
+        if "on_mapping_clicked" in settings and game in settings["on_mapping_clicked"]:
+            self.btn_mapping.setText(self.tr("游玩时开启映射(✔)"))
+        else:
+            self.btn_mapping.setText(self.tr("游玩时开启映射(×)"))
+        # 新增：显示游玩时间
+        play_time = settings.get("play_time", {}).get(game, 0)
+        if play_time < 60:
+            play_time_str = self.tr("游玩时间：%1 分钟").replace('%1', str(play_time))
+        else:
+            hours = play_time // 60
+            minutes = play_time % 60
+            play_time_str = self.tr("游玩时间：%1 小时 %2 分钟").replace('%1', str(hours)).replace('%2', str(minutes))
+        self.play_time_label.setText(play_time_str)
 
     def clear_filter(self):
         self.filter_game_name = None
@@ -6093,11 +6237,12 @@ def get_dialog_qss(scale_factor):
             }}
         """
 class ConfirmDialog(QDialog):
-    def __init__(self, variable1, scale_factor=1.0, parent=None):
+    def __init__(self, variable1, scale_factor=1.0, parent=None, info_only=False):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.variable1 = variable1
         self.scale_factor = scale_factor
+        self.info_only = info_only
         self.setWindowTitle(self.tr("游戏确认"))
         # 添加 Qt.WindowStaysOnTopHint 确保对话框在 Overlay 之上
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -6115,10 +6260,13 @@ class ConfirmDialog(QDialog):
         self.overlay = Overlay(self)
         
         self.init_ui()
-        self.buttons = [self.cancel_button, self.confirm_button]
+        self.buttons = []
+        if not self.info_only:
+            self.buttons.append(self.cancel_button)
+        self.buttons.append(self.confirm_button)
         if hasattr(self, 'shutdown_button'):
             self.buttons.append(self.shutdown_button)
-        self.current_index = 1  # 默认选中第一个（取消）
+        self.current_index = 0 if self.info_only else 1  # 默认选中取消
         self.last_input_time = 0  # 最后一次处理输入的时间
         self.input_delay = 300  # 去抖延迟时间，单位：毫秒
         self.ignore_input_until = 0  # 忽略输入的时间戳
@@ -6130,6 +6278,7 @@ class ConfirmDialog(QDialog):
         # 显示提示文本
         self.label = QLabel(self.variable1)
         self.label.setAlignment(Qt.AlignCenter)  # 设置文本居中
+        self.label.setWordWrap(True)
         if "※" in self.variable1:
             self.label.setStyleSheet(f"font-size: {24 * self.scale_factor}px; color: #FFFFFF; margin-bottom: 40px; text-align: center;")
         layout.addWidget(self.label)
@@ -6137,13 +6286,14 @@ class ConfirmDialog(QDialog):
         # 创建按钮区域
         button_layout = QHBoxLayout()
 
-        # 取消按钮
-        self.cancel_button = QPushButton(self.tr("取消"))
-        self.cancel_button.clicked.connect(self.cancel_action)
-        button_layout.addWidget(self.cancel_button)
+        # 取消按钮（仅提示模式下不显示）
+        if not self.info_only:
+            self.cancel_button = QPushButton(self.tr("取消"))
+            self.cancel_button.clicked.connect(self.cancel_action)
+            button_layout.addWidget(self.cancel_button)
 
         # 确认按钮
-        self.confirm_button = QPushButton(self.tr("确认"))
+        self.confirm_button = QPushButton(self.tr("确定") if self.info_only else self.tr("确认"))
         self.confirm_button.clicked.connect(self.confirm_action)
         button_layout.addWidget(self.confirm_button)
 
@@ -7388,7 +7538,7 @@ class SunshineAppManagerThread(QThread):
                 error_code = getattr(e, 'winerror', None)
                 if error_code == 1314:  # ERROR_PRIVILEGE_NOT_HELD
                     _enable_peer_level_launch()
-                    QMessageBox.warning(None, QApplication.translate("Simplenite", "权限提示（可能需要重新进入软件）"), QApplication.translate("Simplenite", "CreateProcessAsUser 失败（权限不足）。已启用同级权限启动模式规避此问题，可前往应用设置-开发者选项查看该选项详情"))
+                    QMessageBox.warning(None, QApplication.translate("Simplenite", "权限提示（可能需要重新进入软件）"), QApplication.translate("Simplenite", "CreateProcessAsUser 失败（权限不足）。已启用同级权限启动模式规避此问题，可前往应用设置-实验性功能查看该选项详情"))
                     try:
                         print(f"以同级权限启动: {cmdline}")
                         proc = subprocess.Popen(["SunshineAppManager.exe"])
@@ -7402,6 +7552,294 @@ class SunshineAppManagerThread(QThread):
         except Exception as e:
             print(f"SunshineAppManagerThread error: {e}")
         self.finished_signal.emit()
+
+
+class SunshineOrderSyncThread(QThread):
+    """后台把主页游戏顺序写入 Sunshine，避免阻塞界面"""
+    sync_done = pyqtSignal(bool, str)
+
+    def __init__(self, ordered_names):
+        super().__init__()
+        self.ordered_names = list(ordered_names or [])
+
+    def run(self):
+        try:
+            ok, message = apply_sunshine_app_order(self.ordered_names)
+        except Exception as e:
+            ok, message = False, str(e)
+        self.sync_done.emit(ok, message)
+
+
+class AllGamesWindow(QWidget):
+    """托盘菜单“显示全部游戏”面板：网格视图展示全部游戏。
+
+    行样式沿用托盘右键菜单中的游戏行（图标 + 名称 + 右侧方形按钮），
+    右侧按钮改为“...”，点击后弹出与游戏详情页左侧相同的操作选项。
+    """
+
+    def __init__(self, game_selector, games):
+        super().__init__(None)
+        self.game_selector = game_selector
+        self.games = list(games or [])
+        self.scale_factor = getattr(game_selector, "scale_factor", settings.get("scale_factor", 1.0))
+        self._popup_menu_open = False
+        sf = self.scale_factor
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QFrame(self)
+        card.setObjectName("allGamesCard")
+        card.setStyleSheet(
+            "#allGamesCard { background-color: #232323; "
+            "border: 1px solid #3a3a3a; border-radius: %dpx; }" % int(10 * sf)
+        )
+        outer.addWidget(card)
+
+        card_layout = QVBoxLayout(card)
+        margin_x = int(14 * sf)
+        card_layout.setContentsMargins(margin_x, int(10 * sf), margin_x, int(12 * sf))
+        card_layout.setSpacing(int(8 * sf))
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(self.tr("全部游戏"), card)
+        title.setStyleSheet(
+            "color: white; background: transparent; border: none; "
+            "font-size: %dpx; font-weight: bold;" % int(18 * sf)
+        )
+        header.addWidget(title)
+        header.addStretch(1)
+        close_btn = QPushButton("✕", card)
+        close_btn.setFixedSize(int(26 * sf), int(26 * sf))
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: #cccccc; border: none;
+                font-size: {int(15 * sf)}px;
+            }}
+            QPushButton:hover {{
+                color: white; background-color: rgba(255,255,255,0.18);
+                border-radius: {int(4 * sf)}px;
+            }}
+        """)
+        close_btn.clicked.connect(self.close)
+        header.addWidget(close_btn)
+        card_layout.addLayout(header)
+
+        scroll = QScrollArea(card)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 12px; margin: 0px; }"
+            "QScrollBar::handle:vertical { background: #555555; border-radius: 6px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        grid = QGridLayout(container)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(int(6 * sf))
+
+        cols = 3 if len(self.games) > 2 else max(1, len(self.games))
+        item_w = int(280 * sf)
+        row_h = int(42 * sf)
+        for i, game in enumerate(self.games):
+            grid.addWidget(self._create_row(game, item_w, row_h), i // cols, i % cols)
+        scroll.setWidget(container)
+        card_layout.addWidget(scroll, 1)
+
+        spacing = int(6 * sf)
+        rows = max(1, (len(self.games) + cols - 1) // cols)
+        content_h = rows * row_h + max(0, rows - 1) * spacing
+        scroll_h = min(content_h, int(560 * sf))
+        panel_w = cols * item_w + (cols - 1) * spacing + margin_x * 2 + int(16 * sf)
+        panel_h = int(30 * sf) + int(8 * sf) + scroll_h + int(22 * sf)
+        self.setFixedSize(panel_w, panel_h)
+        self._move_near_cursor()
+
+    def _move_near_cursor(self):
+        try:
+            pos = QtGui.QCursor.pos()
+        except Exception:
+            pos = QPoint(0, 0)
+        try:
+            area = QApplication.desktop().availableGeometry(pos)
+            x = min(max(area.left(), pos.x()), area.right() - self.width() + 1)
+            y = min(max(area.top(), pos.y()), area.bottom() - self.height() + 1)
+        except Exception:
+            x, y = pos.x(), pos.y()
+        self.move(x, y)
+
+    def _create_row(self, game, width, height):
+        sf = self.scale_factor
+        name = str(game.get("name", ""))
+        row = QWidget()
+        row.setFixedSize(width, height)
+        row.setAttribute(Qt.WA_StyledBackground, True)
+        row.setCursor(Qt.PointingHandCursor)
+        row.setStyleSheet("background-color: transparent; border-radius: %dpx;" % int(6 * sf))
+
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(int(6 * sf), 0, int(4 * sf), 0)
+        hl.setSpacing(int(6 * sf))
+
+        icon_lbl = QLabel(row)
+        icon_lbl.setFixedSize(int(24 * sf), int(24 * sf))
+        icon = game.get("icon")
+        if isinstance(icon, QIcon) and not icon.isNull():
+            icon_lbl.setPixmap(icon.pixmap(int(24 * sf), int(24 * sf)))
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
+        hl.addWidget(icon_lbl, 0)
+
+        name_lbl = QLabel(row)
+        name_font = name_lbl.font()
+        name_font.setPixelSize(int(16 * sf))
+        name_lbl.setFont(name_font)
+        avail = width - int(24 * sf) - int(28 * sf) - int(26 * sf)
+        name_lbl.setText(QtGui.QFontMetrics(name_font).elidedText(name, Qt.ElideRight, max(40, avail)))
+        name_lbl.setToolTip(name)
+        name_lbl.setStyleSheet(
+            "color: white; background: transparent; border: none; font-size: %dpx;" % int(16 * sf)
+        )
+        hl.addWidget(name_lbl, 1)
+
+        more_btn = QPushButton("...", row)
+        more_btn.setFixedSize(int(28 * sf), int(28 * sf))
+        more_btn.setCursor(Qt.PointingHandCursor)
+        more_btn.setToolTip(self.tr("更多操作"))
+        more_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent; color: #999; border: 1px solid #666;
+                font-size: {int(16 * sf)}px; font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255,255,255,0.15); color: white; border: 1px solid #aaa;
+            }}
+        """)
+        more_btn.clicked.connect(lambda checked=False, g=game, b=more_btn: self._show_actions(g, b))
+        hl.addWidget(more_btn, 0)
+
+        def _apply_hover(active):
+            row.setStyleSheet(
+                "background-color: %s; border-radius: %dpx;"
+                % ("#93ffff" if active else "transparent", int(6 * sf))
+            )
+            name_lbl.setStyleSheet(
+                "color: %s; background: transparent; border: none; font-size: %dpx;"
+                % ("black" if active else "white", int(16 * sf))
+            )
+
+        row.enterEvent = lambda e: _apply_hover(True)
+        row.leaveEvent = lambda e: _apply_hover(False)
+
+        def _launch(e=None, n=name):
+            if e is not None and hasattr(e, "button") and e.button() != Qt.LeftButton:
+                return
+            self._launch_game(n)
+        row.mousePressEvent = _launch
+        name_lbl.mousePressEvent = _launch
+        icon_lbl.mousePressEvent = _launch
+        return row
+
+    def _launch_game(self, name):
+        try:
+            for i, g in enumerate(self.game_selector.sort_games()):
+                if str(g.get("name", "")) == name:
+                    self.game_selector.launch_game(i)
+                    break
+        except Exception as e:
+            print(f"启动游戏失败: {e}")
+        self.close()
+
+    def _show_actions(self, game, anchor):
+        name = str(game.get("name", ""))
+        has_backup = bool(game.get("has_backup"))
+        self._popup_menu_open = True
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu, QMenu::item {
+                color: white;
+                background-color: #232323;
+            }
+            QMenu::item:selected,
+            QMenu QMenu::item:selected {
+                color: black;
+                background-color: #93ffff;
+            }
+        """)
+
+        chosen = []
+
+        def _add(text, key):
+            act = menu.addAction(text)
+            act.triggered.connect(lambda checked=False, k=key: chosen.append(k))
+            return act
+
+        _add(self.tr("同步游戏存档") if has_backup else self.tr("设置存档路径"), "sync")
+        if has_backup:
+            _add(self.tr("恢复游戏存档"), "restore")
+            _add(self.tr("查看存档列表"), "backup_list")
+        menu.addSeparator()
+        mapping_on = name in settings.get("on_mapping_clicked", [])
+        _add(self.tr("游玩时开启映射(✔)") if mapping_on else self.tr("游玩时开启映射(×)"), "mapping")
+        freeze_mode = settings.get("freeze_mode", {}).get(name, "跟随全局")
+        _add(self.tr("冻结方式(%1)").replace('%1', freeze_mode), "freeze")
+        custom_on = name in [item.get("name") for item in settings.get("custom_valid_apps", [])]
+        _add(self.tr("配置自定义进程(✔)") if custom_on else self.tr("配置自定义进程(×)"), "custom_proc")
+        tool_count = 0
+        for item in settings.get("custom_tools", []):
+            if item.get("name") == name:
+                tool_count = len(item.get("tools", []))
+                break
+        _add(self.tr("附加工具启动(%1)").replace('%1', str(tool_count)), "tools")
+        menu.addSeparator()
+        _add(self.tr("自定义封面"), "cover")
+        _add(self.tr("重命名游戏名称"), "rename")
+        _add(self.tr("打开游戏文件夹"), "open_folder")
+        _add(self.tr("移除游戏"), "remove")
+
+        try:
+            menu.exec_(anchor.mapToGlobal(QPoint(0, anchor.height())))
+        finally:
+            self._popup_menu_open = False
+            if chosen:
+                # 选中动作后先关闭置顶面板，避免遮挡随后弹出的重命名等对话框
+                self.close()
+                key = chosen[0]
+                QTimer.singleShot(0, lambda: self.game_selector._run_game_action(name, key))
+            else:
+                try:
+                    self.raise_()
+                    self.activateWindow()
+                except Exception:
+                    pass
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        # 焦点在窗口内部控件之间移动（如点击“...”按钮）不算失焦，
+        # 因此延迟到事件循环下一轮再判断整个窗口是否仍处于激活状态。
+        if self._popup_menu_open:
+            return
+        QTimer.singleShot(0, self._close_if_inactive)
+
+    def _close_if_inactive(self):
+        if self._popup_menu_open or self.isActiveWindow():
+            return
+        self.close()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
 
 class GameSelector(QWidget):
     def __init__(self):
@@ -7969,90 +8407,14 @@ class GameSelector(QWidget):
             if not hasattr(self, "_icon_cache"):
                 self._icon_cache = {}
 
-            # 辅助：从文件或可执行中提取图标，优先用 icoextract 提取 exe/dll 图标，否则尝试作为图片加载
-            def _icon_from_file(fp, size=24):
-                try:
-                    key = os.path.abspath(fp) if fp else ""
-                except Exception:
-                    key = str(fp)
-                # 缓存命中直接返回
-                if key and key in self._icon_cache:
-                    return self._icon_cache[key]
-                icon = QIcon()
-                try:
-                    from icoextract import IconExtractor
-                    extractor = IconExtractor(fp)
-                    bio = extractor.get_icon(num=0)
-                    data = bio.getvalue()
-                    pix = QPixmap()
-                    if pix.loadFromData(data):
-                        pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        icon = QIcon(pix)
-                except Exception:
-                    # 忽略 icoextract 失败，继续尝试作为图片加载
-                    pass
-                if icon.isNull():
-                    try:
-                        pix = QPixmap(fp)
-                        if not pix.isNull():
-                            pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                            icon = QIcon(pix)
-                    except Exception:
-                        pass
-                # 保存到缓存（即使是空图标也缓存，避免重复尝试）
-                try:
-                    if key:
-                        self._icon_cache[key] = icon
-                except Exception:
-                    pass
-                return icon
-
-            # 辅助：解析可能含参数或是快捷方式的启动路径，返回可用的 exe 路径或目录
-            def _resolve_exec_path(raw_path):
-                if not raw_path:
-                    return raw_path
-                p = raw_path.strip()
-                candidate = None
-                if p.startswith('"'):
-                    m = re.match(r'^\"([^\"]+)\"', p)
-                    if m:
-                        candidate = m.group(1)
-                if not candidate:
-                    exts = ['.exe', '.lnk', '.bat', '.cmd', '.com', '.ps1']
-                    lower = p.lower()
-                    for ext in exts:
-                        idx = lower.find(ext)
-                        if idx != -1:
-                            candidate = p[:idx + len(ext)]
-                            break
-                if not candidate:
-                    candidate = p.split(' ')[0]
-                candidate = candidate.strip('"')
-                if os.path.exists(candidate):
-                    return candidate
-                if candidate.lower().endswith('.lnk'):
-                    try:
-                        from win32com.client import Dispatch
-                        shell = Dispatch('WScript.Shell')
-                        shortcut = shell.CreateShortCut(candidate)
-                        target = shortcut.Targetpath
-                        if target and os.path.exists(target):
-                            return target
-                    except Exception:
-                        pass
-                if os.path.isdir(candidate):
-                    try:
-                        for fname in os.listdir(candidate):
-                            if fname.lower().endswith('.exe'):
-                                cand = os.path.join(candidate, fname)
-                                if os.path.exists(cand):
-                                    return cand
-                    except Exception:
-                        pass
-                return candidate
+            # 图标解析 / 启动路径解析：复用 GameSelector 的方法（供托盘菜单与“全部游戏”面板共用）
+            _icon_from_file = self._tray_icon_from_file
+            _resolve_exec_path = self._resolve_tray_exec_path
 
             if sorted_games:
                 tray_menu.addSeparator()
+                show_all_action = tray_menu.addAction(self.tr("查看全部游戏..."))
+                show_all_action.triggered.connect(lambda checked=False: QTimer.singleShot(0, self.show_all_games_panel))
                 for idx, game in enumerate(reversed(sorted_games[:self.buttonsindexset])):
                     icon = QIcon()
                     exec_path_raw = game.get("path", "")
@@ -9008,6 +9370,178 @@ class GameSelector(QWidget):
         self.screenshot_window.load_all_images = True   # 加载所有图片
         self.screenshot_window.clear_filter()
         self.screenshot_window.show()
+
+    def _tray_icon_from_file(self, fp, size=24):
+        """从文件或可执行中提取图标，优先用 icoextract 提取 exe/dll 图标，否则尝试作为图片加载。"""
+        if not hasattr(self, "_icon_cache"):
+            self._icon_cache = {}
+        try:
+            key = os.path.abspath(fp) if fp else ""
+        except Exception:
+            key = str(fp)
+        # 缓存命中直接返回
+        if key and key in self._icon_cache:
+            return self._icon_cache[key]
+        icon = QIcon()
+        try:
+            from icoextract import IconExtractor
+            extractor = IconExtractor(fp)
+            bio = extractor.get_icon(num=0)
+            data = bio.getvalue()
+            pix = QPixmap()
+            if pix.loadFromData(data):
+                pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                icon = QIcon(pix)
+        except Exception:
+            # 忽略 icoextract 失败，继续尝试作为图片加载
+            pass
+        if icon.isNull():
+            try:
+                pix = QPixmap(fp)
+                if not pix.isNull():
+                    pix = pix.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    icon = QIcon(pix)
+            except Exception:
+                pass
+        # 保存到缓存（即使是空图标也缓存，避免重复尝试）
+        try:
+            if key:
+                self._icon_cache[key] = icon
+        except Exception:
+            pass
+        return icon
+
+    def _resolve_tray_exec_path(self, raw_path):
+        """解析可能含参数或是快捷方式的启动路径，返回可用的 exe 路径或目录。"""
+        if not raw_path:
+            return raw_path
+        p = raw_path.strip()
+        candidate = None
+        if p.startswith('"'):
+            m = re.match(r'^\"([^\"]+)\"', p)
+            if m:
+                candidate = m.group(1)
+        if not candidate:
+            exts = ['.exe', '.lnk', '.bat', '.cmd', '.com', '.ps1']
+            lower = p.lower()
+            for ext in exts:
+                idx = lower.find(ext)
+                if idx != -1:
+                    candidate = p[:idx + len(ext)]
+                    break
+        if not candidate:
+            candidate = p.split(' ')[0]
+        candidate = candidate.strip('"')
+        if os.path.exists(candidate):
+            return candidate
+        if candidate.lower().endswith('.lnk'):
+            try:
+                from win32com.client import Dispatch
+                shell = Dispatch('WScript.Shell')
+                shortcut = shell.CreateShortCut(candidate)
+                target = shortcut.Targetpath
+                if target and os.path.exists(target):
+                    return target
+            except Exception:
+                pass
+        if os.path.isdir(candidate):
+            try:
+                for fname in os.listdir(candidate):
+                    if fname.lower().endswith('.exe'):
+                        cand = os.path.join(candidate, fname)
+                        if os.path.exists(cand):
+                            return cand
+            except Exception:
+                pass
+        return candidate
+
+    def _game_icon(self, game, size=24):
+        """获取游戏行图标：优先可执行文件图标，其次封面图。"""
+        icon = QIcon()
+        exec_path_raw = game.get("path", "")
+        if not exec_path_raw:
+            try:
+                for v in valid_apps:
+                    if v.get("name") == game.get("name") and v.get("path"):
+                        exec_path_raw = v.get("path")
+                        break
+            except Exception:
+                pass
+        exec_path = self._resolve_tray_exec_path(exec_path_raw)
+        if exec_path and os.path.exists(exec_path):
+            icon = self._tray_icon_from_file(exec_path, size)
+        if icon.isNull():
+            image_path = game.get("image-path", "")
+            if image_path and not os.path.isabs(image_path):
+                image_path = f"{APP_INSTALL_PATH}\\config\\covers\\{image_path}"
+            icon = self._tray_icon_from_file(image_path, size)
+        return icon
+
+    def show_all_games_panel(self):
+        """托盘菜单“显示全部游戏”：用网格视图展示全部游戏。"""
+        try:
+            sorted_games = self.sort_games()
+            if not sorted_games:
+                return
+            backup_names = set()
+            try:
+                for g in mao_load_config().get("games", []):
+                    if str(g.get("path", "")).strip():
+                        backup_names.add(str(g.get("name", "")).strip())
+            except Exception:
+                pass
+            games = []
+            for g in sorted_games:
+                name = str(g.get("name", ""))
+                games.append({
+                    "name": name,
+                    "icon": self._game_icon(g),
+                    "has_backup": name in backup_names,
+                })
+            old = getattr(self, "_all_games_window", None)
+            if old is not None:
+                try:
+                    old.close()
+                    old.deleteLater()
+                except Exception:
+                    pass
+            win = AllGamesWindow(self, games)
+            self._all_games_window = win
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            win.setFocus()
+        except Exception as e:
+            print(f"显示全部游戏失败: {e}")
+
+    def _run_game_action(self, game_name, action_key):
+        """从“全部游戏”面板执行指定游戏详情页左侧按钮动作。
+
+        复用 ScreenshotWindow 中已有的按钮处理逻辑：创建一个隐藏的详情窗口，
+        将状态同步到目标游戏后直接调用对应处理函数，不显示完整详情页。
+        """
+        try:
+            old = getattr(self, "screenshot_window", None)
+            if old is not None:
+                try:
+                    old.safe_close()
+                    old.deleteLater()
+                except Exception:
+                    pass
+            win = ScreenshotWindow(self, initial_game=game_name)
+            self.screenshot_window = win
+            win.run_game_action(game_name, action_key)
+        except Exception as e:
+            print(f"执行游戏操作失败: {e}")
+            # 兜底：打开该游戏的详情页，左侧按钮选项仍可直接操作
+            try:
+                win = getattr(self, "screenshot_window", None)
+                if win is not None:
+                    win.show()
+                    win.start_filter_mode(game_name=game_name)
+            except Exception:
+                pass
+
     def update_time(self):
         """更新时间显示"""
         # 不显示电量时附加星期（dddd）
@@ -9055,7 +9589,7 @@ class GameSelector(QWidget):
         # 按钮停在半途（QPropertyAnimation ... without target 警告）
         # 注意：该判断必须放在布局就绪检测之后，否则会拦截“延迟重试”导致动画永不启动
 
-        # 若开发者选项禁用启动飞入动画，则在任意调用点均跳过动画
+        # 若实验性功能禁用启动飞入动画，则在任意调用点均跳过动画
         if settings.get("disable_startup_fly_in_animation", False):
             # 取消预隐藏标志并清理可能已设置的 opacity effect，确保按钮可见
             try:
@@ -12884,6 +13418,7 @@ class GameSelector(QWidget):
             json.dump(settings, f, indent=4)
 
         self.reload_interface()
+        self.sync_game_order_to_sunshine()
         self.ignore_input_until = _get_ticks() + 1000
         # 新增：如果该游戏在 on_mapping_clicked 里，自动开启鼠标映射
         if "on_mapping_clicked" in settings and game_name in settings["on_mapping_clicked"]:
@@ -13942,6 +14477,33 @@ class GameSelector(QWidget):
                 sorted_games.append(game)
         
         return sorted_games
+
+    def sync_game_order_to_sunshine(self, notify=False):
+        """实验性功能：把主页游戏顺序通过 Sunshine Web API 写入 apps.json"""
+        if not settings.get("sync_game_order_with_sunshine", False):
+            return
+        if not games:
+            return
+        ordered_names = [game["name"] for game in self.sort_games()]
+        running_thread = getattr(self, "_sunshine_order_sync_thread", None)
+        if running_thread is not None and running_thread.isRunning():
+            return
+        self._sunshine_order_sync_thread = SunshineOrderSyncThread(ordered_names)
+        self._sunshine_order_sync_thread.sync_done.connect(
+            lambda ok, message: self._on_sunshine_order_sync_done(ok, message, notify)
+        )
+        self._sunshine_order_sync_thread.start()
+
+    def _on_sunshine_order_sync_done(self, ok, message, notify):
+        if ok:
+            print(message)
+            return
+        print(f"同步游戏顺序失败: {message}")
+        if not notify:
+            return
+        dialog = ConfirmDialog(message, scale_factor=self.scale_factor, parent=self, info_only=True)
+        dialog.exec_()
+
     def exitdef(self):
         """退出程序"""
         # 停止所有线程
@@ -14023,6 +14585,7 @@ class GameSelector(QWidget):
         
         # 重新加载界面
         self.reload_interface()
+        self.sync_game_order_to_sunshine()
     
     def on_scale_factor_updated(self, new_scale_factor):
         """缩放因子更新时调用，更新界面控件尺寸与布局"""
@@ -17552,7 +18115,7 @@ class SettingsWindow(QWidget):
         add_category(self.tr("主页功能"), "home_feature")
         add_category(self.tr("游玩时长"), "play_time")
         add_category(self.tr("关于"), "about")
-        add_category(self.tr("开发者选项"), "developer")
+        add_category(self.tr("实验性功能"), "developer")
 
         left_layout.addStretch()
 
@@ -17595,7 +18158,7 @@ class SettingsWindow(QWidget):
         self.pages.addWidget(self.placeholder_page)  # index 4 - 其它
         self.pages.addWidget(self.play_time_page)    # index 5 - 游玩时长
         self.pages.addWidget(self.about_page)        # index 6 - 关于
-        self.pages.addWidget(self.developer_page)    # index 7 - 开发者选项
+        self.pages.addWidget(self.developer_page)    # index 7 - 实验性功能
 
         main_layout.addWidget(left_container)
         main_layout.addWidget(right_container, 1)
@@ -18706,7 +19269,7 @@ class SettingsWindow(QWidget):
         #'<a href="https://wwse.lanzn.com/b00uz4bjmd" style="color:#93ffff;">蓝奏（密码:85jl）</a>　|　'
         title_label = QLabel(
             '<a href="https://qm.qq.com/q/pSHQTlnbJQ" style="color:#93ffff;">QQ群</a>　|　'
-            '<a href="https://github.com/gmaox/DeskGamix" style="color:#93ffff;">GitHub</a>　|　'
+            '<a href="https://github.com/gmaox/simplenite" style="color:#93ffff;">GitHub</a>　|　'
             '<a href="https://space.bilibili.com/258889407" style="color:#93ffff;">B站主页</a>'
         )
         title_label.setStyleSheet(f"color: white; font-size: {int(26 * scale)}px; ")
@@ -18733,7 +19296,7 @@ class SettingsWindow(QWidget):
         return page
 
     def _create_developer_page(self, scale: float) -> QWidget:
-        """开发者选项页"""
+        """实验性功能页"""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(int(10 * scale), int(20 * scale), int(10 * scale), int(20 * scale))
@@ -18811,6 +19374,30 @@ class SettingsWindow(QWidget):
         hint_disable.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint_disable)
 
+        self.sync_sunshine_order_button = QPushButton(
+            self.tr("和sunshine基地版同步游戏顺序  %1").replace('%1', '开' if settings.get('sync_game_order_with_sunshine', False) else '关')
+        )
+        self.sync_sunshine_order_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: #ffffff;
+                text-align: left;
+                padding: {int(16 * scale)}px 0;
+                border: none;
+                font-size: {int(26 * scale)}px;
+            }}
+            QPushButton:hover {{
+                background-color: #3d3d3d;
+            }}
+        """)
+        self.sync_sunshine_order_button.clicked.connect(self.toggle_sync_sunshine_order)
+        layout.addWidget(self.sync_sunshine_order_button)
+
+        hint_sync_sunshine = QLabel(self.tr("开启后会把 Simplenite 游戏顺序通过 Sunshine Web API 写入，使 Moonlight 及基地版客户端的应用列表顺序与主页保持一致。修改收藏或启动游戏时会自动同步 (需要 Sunshine 正在运行)"))
+        hint_sync_sunshine.setWordWrap(True)
+        hint_sync_sunshine.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
+        layout.addWidget(hint_sync_sunshine)
+
         self.manage_ignored_apps_button = QPushButton(self.tr("管理忽略的应用"))
         self.manage_ignored_apps_button.setStyleSheet(f"""
             QPushButton {{
@@ -18833,7 +19420,7 @@ class SettingsWindow(QWidget):
         hint_ignore.setStyleSheet(f"color: #aaaaaa; font-size: {int(16 * scale)}px;")
         layout.addWidget(hint_ignore)
 
-        # 行：回主页时尝试冻结游戏（从控制台页移入开发者选项）
+        # 行：回主页时尝试冻结游戏（从控制台页移入实验性功能）
         self.freeze_button = QPushButton(
             self.tr("回主页时尝试冻结游戏  %1").replace('%1', '开' if settings.get('freeze', False) else '关')
         )
@@ -18864,6 +19451,7 @@ class SettingsWindow(QWidget):
             self.peer_launch_button,
             self.debug_window_button,
             self.disable_startup_animation_button,
+            self.sync_sunshine_order_button,
             self.manage_ignored_apps_button,
             self.freeze_button,
         ]
@@ -18892,7 +19480,7 @@ class SettingsWindow(QWidget):
             self.current_title.setText(self.tr("关于"))
             self.pages.setCurrentIndex(6)
         elif key == "developer":
-            self.current_title.setText(self.tr("开发者选项"))
+            self.current_title.setText(self.tr("实验性功能"))
             self.pages.setCurrentIndex(7)
         else:
             # 其它类别暂时复用同一个占位页
@@ -19596,6 +20184,17 @@ class SettingsWindow(QWidget):
         )
         with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=4)
+
+    def toggle_sync_sunshine_order(self):
+        settings["sync_game_order_with_sunshine"] = not settings.get("sync_game_order_with_sunshine", False)
+        enabled = settings["sync_game_order_with_sunshine"]
+        self.sync_sunshine_order_button.setText(
+            f"和sunshine基地版同步游戏顺序  {'开' if enabled else '关'}"
+        )
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+        if enabled and self.parent() and hasattr(self.parent(), "sync_game_order_to_sunshine"):
+            self.parent().sync_game_order_to_sunshine(notify=True)
 
     def show_manage_ignored_apps_dialog(self):
         dialog = QDialog(self)
