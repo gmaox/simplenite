@@ -8319,7 +8319,7 @@ class GameSelector(QWidget):
         self.left_label.setStyleSheet(f"""
             QLabel {{
                 font-family: "Microsoft YaHei"; 
-                color: white;
+                color: rgba(255, 255, 255, 180);
                 font-size: {int(25 * self.scale_factor)}px;
                 padding-bottom: {int(10 * self.scale_factor)}px;
                 padding-left: {int(50 * self.scale_factor)}px;
@@ -14810,7 +14810,7 @@ class GameSelector(QWidget):
         if hasattr(self, 'left_label'):
             self.left_label.setStyleSheet(f"""
                 QLabel {{
-                    color: white;
+                    color: rgba(255, 255, 255, 180);
                     font-size: {int(25 * self.scale_factor)}px;
                     padding-bottom: {int(10 * self.scale_factor)}px;
                     padding-left: {int(50 * self.scale_factor)}px;
@@ -14820,7 +14820,9 @@ class GameSelector(QWidget):
         if hasattr(self, 'right_label'):
             self.right_label.setStyleSheet(f"""
                 QLabel {{
-                    color: white;
+                    font-family: "Microsoft YaHei Light", "Microsoft YaHei";
+                    font-weight: 300;
+                    color: rgba(255, 255, 255, 180);
                     font-size: {int(25 * self.scale_factor)}px;
                     padding-bottom: {int(10 * self.scale_factor)}px;
                     padding-right: {int(50 * self.scale_factor)}px;
