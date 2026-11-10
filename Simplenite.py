@@ -10065,6 +10065,11 @@ class GameSelector(QWidget):
         self.scale_factor2 = self.scale_factor  # 用于按钮和图像的缩放因数
         self.current_index = 0
         self.more_section = 1
+        # 离开圆形按钮区域，恢复显示游戏详情按钮
+        try:
+            self.screenshot_button.setVisible(True)
+        except Exception:
+            pass
         # 使用淡出过渡动画改变 scroll_area 大小并隐藏控制按钮
         try:
             target_h = int(self.height() * 0.85)
@@ -10080,6 +10085,11 @@ class GameSelector(QWidget):
         self.current_index = 0
         self.more_section = 0
         target_h = int(320 * self.scale_factor * 2.4)
+        # 回到游戏选择区域，恢复显示游戏详情按钮
+        try:
+            self.screenshot_button.setVisible(True)
+        except Exception:
+            pass
         try:
             self.animate_scroll_area_transition(target_h, show_controls=True, duration=200)
         except Exception:
@@ -11375,6 +11385,12 @@ class GameSelector(QWidget):
 
     def update_highlight(self):
         """高亮当前选中的游戏按钮，并更新游戏名称"""
+        # 焦点在圆形按钮区域（后台任务/功能区）时隐藏游戏详情按钮
+        try:
+            self.screenshot_button.setVisible(self.current_section != 1)
+        except Exception:
+            pass
+
         sorted_games = self.sort_games()
 
         # 检查是否有游戏
