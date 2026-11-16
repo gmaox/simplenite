@@ -114,7 +114,7 @@ Xbox全屏体验指南
 
 **设计合理**：精心排布的布局，良好的触摸体验，完善的手柄支持（Xbox/ds4）
 
-![1000131675](https://github.com/user-attachments/assets/305dd201-c5b3-472b-a296-7506b650433f)
+![1000131675](https://github.com/user-attachments/assets/d1784075-a380-4fc1-aba6-9668dda749fb)
 
 **⭐特色功能**
 
