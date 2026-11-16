@@ -17,7 +17,7 @@ Xbox Full-Screen Experience Guide
 
 2. After completing the basic full-screen setup by following the OmniConsole tutorial, refer to the image below and add Simplenite to the Custom section. You can then enjoy Simplenite in full-screen mode.
 
-<img width="960" height="600" alt="image" src="https://github.com/user-attachments/assets/0f3da8b0-369c-4052-80d2-cd1a388ba8b3" />
+<img width="960" height="600" alt="image" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
 
 </details>
 
@@ -27,7 +27,7 @@ Xbox Full-Screen Experience Guide
 
 **A lightweight Windows game launcher with a collection of built-in gaming utilities, making it easy to manage your gaming experience on Windows 10/11.**
 
-<img width="1909" height="1080" alt="1000206717" src="https://github.com/user-attachments/assets/49a88ab2-aaba-4f84-ab6f-b066711f8a52" />
+<img width="1909" height="1080" alt="1000206717" src="https://github.com/user-attachments/assets/0f3da8b0-369c-4052-80d2-cd1a388ba8b3" />
 
 **⭐ Highlights**
 
@@ -93,7 +93,7 @@ Xbox全屏体验指南
   
 2.按照OmniConsole教程完成全屏基础设置后，参考下图将Simplenite添加在自定义中即可在全屏模式下体验Simplenite
   
-<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/d1784075-a380-4fc1-aba6-9668dda749fb" />
+<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
 
 </details>
   
@@ -103,7 +103,7 @@ Xbox全屏体验指南
 
 **一款轻量级的Windows 游戏启动工具，内置多种游戏工具，轻松在Windows 10/11系统上掌控您的设备进行游戏**
 
-<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/2e8f4c26-88c4-43a0-8e25-7c64e4859530" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/d1784075-a380-4fc1-aba6-9668dda749fb" />
 
 
 **⭐功能亮点**
