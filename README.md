@@ -17,7 +17,7 @@ Xbox Full-Screen Experience Guide
 
 2. After completing the basic full-screen setup by following the OmniConsole tutorial, refer to the image below and add Simplenite to the Custom section. You can then enjoy Simplenite in full-screen mode.
 
-<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
+<img width="960" height="600" alt="image" src="https://github.com/user-attachments/assets/0f3da8b0-369c-4052-80d2-cd1a388ba8b3" />
 
 </details>
 
@@ -93,7 +93,7 @@ Xbox全屏体验指南
   
 2.按照OmniConsole教程完成全屏基础设置后，参考下图将Simplenite添加在自定义中即可在全屏模式下体验Simplenite
   
-<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/6cf78028-99b2-43ec-b5b2-df07741e1022" />
+<img width="1920" height="1080" alt="IMG_20260612_224546" src="https://github.com/user-attachments/assets/d1784075-a380-4fc1-aba6-9668dda749fb" />
 
 </details>
   
@@ -114,7 +114,7 @@ Xbox全屏体验指南
 
 **设计合理**：精心排布的布局，良好的触摸体验，完善的手柄支持（Xbox/ds4）
 
-![1000131675](https://github.com/user-attachments/assets/d1784075-a380-4fc1-aba6-9668dda749fb)
+![1000131675](https://github.com/user-attachments/assets/305dd201-c5b3-472b-a296-7506b650433f)
 
 **⭐特色功能**
 
